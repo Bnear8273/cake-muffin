@@ -11,6 +11,7 @@ path = "src/main.rs"
 
 [dependencies]
 cake-blacklist = { path = "../crates/cake-blacklist" }
+cake-complete = { path = "../crates/cake-complete" }
 cake-env = { path = "../crates/cake-env" }
 cake-exec = { path = "../crates/cake-exec" }
 cake-highlight = { path = "../crates/cake-highlight" }

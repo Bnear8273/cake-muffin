@@ -13,6 +13,7 @@ name = "cake"
 version = "0.1.0"
 dependencies = [
  "cake-blacklist",
+ "cake-complete",
  "cake-env",
  "cake-exec",
  "cake-highlight",
@@ -33,6 +34,9 @@ version = "0.1.0"
 [[package]]
 name = "cake-complete"
 version = "0.1.0"
+dependencies = [
+ "cake-syntax",
+]
 
 [[package]]
 name = "cake-env"
