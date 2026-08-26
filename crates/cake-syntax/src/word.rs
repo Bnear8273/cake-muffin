@@ -100,22 +100,32 @@ fn scan(text: &str, base: Offset, in_dquotes: bool) -> Vec<WordPart> {
                 }
             }
             '\'' => {
-                flush_lit!();
-                match find_simple_quote(text, i + 1, '\'') {
-                    Some(close) => {
-                        let content = text[i + 1..close].to_owned();
-                        parts.push(WordPart::SingleQuoted(
-                            content,
-                            Span::new(base + i as Offset, base + close as Offset + 1),
-                        ));
-                        i = close + 1;
-                    }
-                    None => {
-                        // Unterminated (should not reach here from the lexer);
-                        // treat as literal.
-                        lit.push('\'');
+                if in_dquotes {
+                    // Single quotes have no special meaning inside double
+                    // quotes: they are literal characters.
+                    if lit.is_empty() {
                         lit_start = i as Offset;
-                        i += 1;
+                    }
+                    lit.push('\'');
+                    i += 1;
+                } else {
+                    flush_lit!();
+                    match find_simple_quote(text, i + 1, '\'') {
+                        Some(close) => {
+                            let content = text[i + 1..close].to_owned();
+                            parts.push(WordPart::SingleQuoted(
+                                content,
+                                Span::new(base + i as Offset, base + close as Offset + 1),
+                            ));
+                            i = close + 1;
+                        }
+                        None => {
+                            // Unterminated (should not reach here from the lexer);
+                            // treat as literal.
+                            lit.push('\'');
+                            lit_start = i as Offset;
+                            i += 1;
+                        }
                     }
                 }
             }
@@ -161,7 +171,7 @@ fn scan(text: &str, base: Offset, in_dquotes: bool) -> Vec<WordPart> {
                 parts.push(r.0);
                 i = r.1;
             }
-            '~' if i == 0 => {
+            '~' if i == 0 && !in_dquotes => {
                 flush_lit!();
                 // Tilde up to the next `/` or end.
                 let mut j = i + 1;

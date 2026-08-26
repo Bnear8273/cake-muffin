@@ -218,8 +218,7 @@ fn printf(args: &[String]) -> Result<ProcStatus, String> {
             }
             _ => buf.push_str(&spec),
         }
-        // For simplicity, M2a prints each spec once (no cycling).
-        break;
+        // M2a: each spec consumes the first argument (no cycling yet).
     }
     // Any trailing literal text.
     buf.push_str(&chars.as_str());

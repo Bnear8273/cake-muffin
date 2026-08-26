@@ -135,7 +135,10 @@ fn expand_part(ctx: &ExpandCtx, part: &WordPart, in_dquotes: bool, ifs: &[char])
         // inside text literally so `$((1+2))` still yields something useful.
         WordPart::CommandSubst(s, _) => Ok(PartOut::Append(s.clone())),
         WordPart::ArithExpansion(s, _) => {
-            let v = crate::arith::eval_arith_value(ctx.env, s)?;
+            // bash: parameter expansion happens on the arithmetic text first
+            // (`$(( $1 + $2 ))`), then the result is evaluated.
+            let expanded = expand_arith_text(ctx, s)?;
+            let v = crate::arith::eval_arith_value(ctx.env, &expanded)?;
             Ok(if in_dquotes {
                 PartOut::Append(v)
             } else {
@@ -348,6 +351,14 @@ pub fn expand_redirect_word(ctx: &ExpandCtx, word: &Word) -> Result<String, Stri
 pub fn expand_plain_string(ctx: &ExpandCtx, s: &str) -> Result<Vec<String>, String> {
     let word = cake_syntax::word::parse_word(s, cake_syntax::Span::new(0, s.len() as u32));
     expand_word(ctx, &word)
+}
+
+/// Expand parameters inside an arithmetic expression before evaluating it
+/// (bash does the same: `$(( $1 + $2 ))`).
+fn expand_arith_text(ctx: &ExpandCtx, s: &str) -> Result<String, String> {
+    let word = cake_syntax::word::parse_word(s, cake_syntax::Span::new(0, s.len() as u32));
+    let fields = expand_word(ctx, &word)?;
+    Ok(fields.concat())
 }
 
 /// Build a single-literal Word from a string.

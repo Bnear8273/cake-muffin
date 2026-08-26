@@ -415,7 +415,7 @@ impl<'a> Lexer<'a> {
             if self.ctx.in_cond && !in_dquote && self.rest().starts_with("]]") {
                 break;
             }
-            if self.ctx.in_cond && !in_dquote && matches!(c, '(' | ')') {
+            if (self.ctx.in_cond || self.ctx.in_arith) && !in_dquote && matches!(c, '(' | ')') {
                 break;
             }
             // In command position, an unquoted `!` that begins a fresh word

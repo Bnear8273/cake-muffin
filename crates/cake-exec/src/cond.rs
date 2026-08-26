@@ -188,7 +188,9 @@ impl<'a> CondParser<'a> {
         let word = self.eat().ok_or_else(|| "expected word".to_string())?;
         let fields = expand_plain_string(&self.ctx, &word)
             .map_err(|e| alloc::format!("expansion error: {e}"))?;
-        Ok(fields.into_iter().next().unwrap_or(word))
+        // An empty expansion (e.g. `""` or an unset variable) yields zero
+        // fields; as a `[[ ]]` operand that is the empty string.
+        Ok(fields.into_iter().next().unwrap_or_default())
     }
 }
 
@@ -235,6 +237,16 @@ fn tokenize_cond(text: &str) -> Vec<String> {
             flush!();
             chars.next();
             tokens.push("||".into());
+            continue;
+        }
+        // Multi-char comparison operators before single-char handling.
+        if matches!(c, '!' | '<' | '>') && chars.peek() == Some(&'=') {
+            flush!();
+            chars.next();
+            let mut tok = String::new();
+            tok.push(c);
+            tok.push('=');
+            tokens.push(tok);
             continue;
         }
         if matches!(c, '(' | ')' | '!') {

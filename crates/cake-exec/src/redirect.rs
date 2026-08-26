@@ -155,9 +155,11 @@ fn apply_redirect(ctx: &ExpandCtx, r: &Redirect, fds: &mut CommandFds) -> Result
                 _ => unreachable!(),
             });
         }
-        // `<<<word`: pipe the expanded word to stdin.
-        (RedirectKind::HereString, RedirectTarget::HereString(w)) => {
-            let text = expand_redirect_word(ctx, w)?;
+        // `<<<word`: pipe the expanded word + trailing newline to stdin
+        // (bash appends a newline to herestrings).
+        (RedirectKind::HereString, RedirectTarget::Word(w)) => {
+            let mut text = expand_redirect_word(ctx, w)?;
+            text.push('\n');
             setup_stdin_string(&mut fds.stdin, &text)?;
             fds.owned.push(match fds.stdin {
                 ChildFd::Fd(fd) => fd,

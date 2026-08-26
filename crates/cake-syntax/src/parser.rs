@@ -854,7 +854,7 @@ impl<'a> Parser<'a> {
             self.advance(); // consume delimiter
             let slot = Rc::new(RefCell::new(None));
             self.pending_heredocs.push(PendingHeredoc {
-                delimiter: delim_tok.text.clone(),
+                delimiter: unquote_heredoc_delimiter(&delim_tok.text),
                 strip_tabs,
                 slot: slot.clone(),
             });
@@ -1010,5 +1010,15 @@ impl<'a> Parser<'a> {
             ));
             Err(())
         }
+    }
+}
+/// `<<'X'` / `<<"X"` / `<<X` all match a body line equal to `X`; strip one
+/// level of surrounding quotes from a heredoc delimiter word.
+fn unquote_heredoc_delimiter(text: &str) -> String {
+    let b = text.as_bytes();
+    if b.len() >= 2 && matches!(b[0], b'\'' | b'"') && b[0] == b[b.len() - 1] {
+        text[1..text.len() - 1].to_owned()
+    } else {
+        text.to_owned()
     }
 }

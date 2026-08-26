@@ -375,18 +375,32 @@ impl<'a> ArithParser<'a> {
             return Ok(cur);
         }
         if self.eat_str("-") {
-            return Ok(-self.parse_unary()?);
+            return Ok(-self.parse_power()?);
         }
         if self.eat_str("+") {
-            return Ok(self.parse_unary()?);
+            return Ok(self.parse_power()?);
         }
         if self.eat_str("~") {
-            return Ok(!self.parse_unary()?);
+            return Ok(!self.parse_power()?);
         }
         if self.eat_str("!") {
-            return Ok(if self.parse_unary()? == 0 { 1 } else { 0 });
+            return Ok(if self.parse_power()? == 0 { 1 } else { 0 });
         }
-        self.parse_primary()
+        self.parse_power()
+    }
+
+    /// `**` exponentiation: binds tighter than unary `-`, right-associative.
+    fn parse_power(&mut self) -> Result<i64, String> {
+        let base = self.parse_primary()?;
+        if self.eat_str("**") {
+            let exp = self.parse_unary()?;
+            if exp < 0 {
+                // Integer division: a ** -n is 0 except for |a| == 1.
+                return Ok(if base.abs() == 1 { base } else { 0 });
+            }
+            return Ok(base.wrapping_pow(exp as u32));
+        }
+        Ok(base)
     }
 
     fn parse_primary(&mut self) -> Result<i64, String> {

@@ -1,0 +1,10 @@
+# cake:xfail
+x="hello world"
+echo "${#x}"
+echo "${x:0:5}"
+echo "${x/world/there}"
+echo "${unset_var:-default}"
+echo "${x^^}"
+y="a/b/c"
+echo "${y#*/}"
+echo "${y##*/}"
