@@ -1,0 +1,30 @@
+[workspace]
+members = [
+    "cake",
+    "crates/cake-blacklist",
+    "crates/cake-builtin",
+    "crates/cake-complete",
+    "crates/cake-env",
+    "crates/cake-exec",
+    "crates/cake-highlight",
+    "crates/cake-platform",
+    "crates/cake-platform-mock",
+    "crates/cake-platform-unix",
+    "crates/cake-proc",
+    "crates/cake-reader",
+    "crates/cake-syntax",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+rust-version = "1.96.0"
+
+[workspace.dependencies]
+libc = "0.2"
+nix = { version = "0.31", features = ["process", "signal", "fs", "term", "poll", "resource"] }
+cake-platform = { path = "crates/cake-platform" }
+cake-platform-unix = { path = "crates/cake-platform-unix" }
+cake-platform-mock = { path = "crates/cake-platform-mock" }

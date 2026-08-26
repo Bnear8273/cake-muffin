@@ -1,0 +1,19 @@
+[package]
+name = "cake"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "cake"
+path = "src/main.rs"
+
+[dependencies]
+cake-blacklist = { path = "../crates/cake-blacklist" }
+cake-env = { path = "../crates/cake-env" }
+cake-exec = { path = "../crates/cake-exec" }
+cake-platform = { path = "../crates/cake-platform" }
+cake-platform-unix = { path = "../crates/cake-platform-unix" }
+cake-syntax = { path = "../crates/cake-syntax" }
+rustyline = "16"

@@ -1,0 +1,13 @@
+[package]
+name = "cake-exec"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+cake-blacklist = { path = "../cake-blacklist" }
+cake-env = { path = "../cake-env" }
+cake-platform = { path = "../cake-platform" }
+cake-proc = { path = "../cake-proc" }
+cake-syntax = { path = "../cake-syntax" }
