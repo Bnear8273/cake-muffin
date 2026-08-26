@@ -19,6 +19,7 @@ dependencies = [
  "cake-highlight",
  "cake-platform",
  "cake-platform-unix",
+ "cake-reader",
  "cake-syntax",
  "rustyline",
 ]

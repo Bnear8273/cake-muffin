@@ -17,5 +17,6 @@ cake-exec = { path = "../crates/cake-exec" }
 cake-highlight = { path = "../crates/cake-highlight" }
 cake-platform = { path = "../crates/cake-platform" }
 cake-platform-unix = { path = "../crates/cake-platform-unix" }
+cake-reader = { path = "../crates/cake-reader" }
 cake-syntax = { path = "../crates/cake-syntax" }
 rustyline = "16"

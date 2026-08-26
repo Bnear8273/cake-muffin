@@ -26,10 +26,11 @@ use rustyline::{CompletionType, Config, EditMode, Editor, Helper};
 
 use crate::import_env;
 
-/// rustyline helper: syntax highlighting and tab completion. Autosuggestion
-/// (Hinter) arrives in M3c.
+/// rustyline helper: syntax highlighting, tab completion and fish-style
+/// autosuggestion.
 struct CakeHelper {
     exec: Rc<RefCell<Executor>>,
+    history: Rc<RefCell<Vec<String>>>,
 }
 
 impl Highlighter for CakeHelper {
@@ -38,6 +39,10 @@ impl Highlighter for CakeHelper {
     }
     fn highlight_char(&self, _line: &str, _pos: usize, _kind: rustyline::highlight::CmdKind) -> bool {
         true
+    }
+    fn highlight_hint<'h>(&self, hint: &'h str) -> Cow<'h, str> {
+        // Render autosuggestions dim.
+        Cow::Owned(format!("\x1b[2m{hint}\x1b[0m"))
     }
 }
 
@@ -56,8 +61,12 @@ impl Completer for CakeHelper {
 
 impl Hinter for CakeHelper {
     type Hint = String;
-    fn hint(&self, _line: &str, _pos: usize, _ctx: &rustyline::Context<'_>) -> Option<String> {
-        None
+    fn hint(&self, line: &str, pos: usize, _ctx: &rustyline::Context<'_>) -> Option<String> {
+        if pos != line.len() {
+            return None;
+        }
+        let h = self.history.borrow();
+        cake_reader::suggest(line, &h)
     }
 }
 
@@ -188,7 +197,9 @@ pub fn run_interactive() -> ! {
 
     let helper = CakeHelper {
         exec: executor.clone(),
+        history: Rc::new(RefCell::new(Vec::new())),
     };
+    let helper_hist = helper.history.clone();
     let mut editor = match Editor::<CakeHelper, rustyline::history::DefaultHistory>::with_config(
         Config::builder()
             .edit_mode(EditMode::Emacs)
@@ -255,6 +266,11 @@ pub fn run_interactive() -> ! {
 
             match cake_syntax::parse(&buffer) {
                 Ok(_) => {
+                    // Record the executed line for autosuggestion.
+                    let trimmed = buffer.trim().to_string();
+                    if !trimmed.is_empty() {
+                        helper_hist.borrow_mut().push(trimmed);
+                    }
                     let outcome = {
                         let mut exec = executor.borrow_mut();
                         exec.eval_str(&buffer)
