@@ -15,6 +15,7 @@ dependencies = [
  "cake-blacklist",
  "cake-env",
  "cake-exec",
+ "cake-highlight",
  "cake-platform",
  "cake-platform-unix",
  "cake-syntax",
@@ -51,6 +52,9 @@ dependencies = [
 [[package]]
 name = "cake-highlight"
 version = "0.1.0"
+dependencies = [
+ "cake-syntax",
+]
 
 [[package]]
 name = "cake-platform"

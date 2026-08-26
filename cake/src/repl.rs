@@ -5,16 +5,62 @@
 //! Ctrl-C / Ctrl-D handling. The [`Executor`] is kept across commands so
 //! variables, functions and the working directory persist.
 
+use std::borrow::Cow;
 use std::io::{BufRead, IsTerminal};
 use std::path::PathBuf;
 
 use cake_blacklist::CommandBlacklist;
 use cake_exec::Executor;
 use cake_platform::XdgKind;
+use rustyline::completion::{Completer, Pair};
 use rustyline::error::ReadlineError;
-use rustyline::{Config, DefaultEditor, EditMode};
+use rustyline::highlight::Highlighter;
+use rustyline::hint::Hinter;
+use rustyline::validate::Validator;
+use rustyline::{CompletionType, Config, EditMode, Editor, Helper};
 
 use crate::import_env;
+
+/// rustyline helper: syntax highlighting now; completion/hints/validation
+/// grow in M3b/M3c.
+#[derive(Clone, Default)]
+struct CakeHelper;
+
+impl Highlighter for CakeHelper {
+    fn highlight<'l>(&self, line: &'l str, _pos: usize) -> Cow<'l, str> {
+        Cow::Owned(cake_highlight::highlight_line(line))
+    }
+    fn highlight_char(&self, _line: &str, _pos: usize, _kind: rustyline::highlight::CmdKind) -> bool {
+        true
+    }
+}
+
+impl Completer for CakeHelper {
+    type Candidate = Pair;
+    fn complete(
+        &self,
+        _line: &str,
+        _pos: usize,
+        _ctx: &rustyline::Context<'_>,
+    ) -> rustyline::Result<(usize, Vec<Self::Candidate>)> {
+        Ok((0, Vec::new()))
+    }
+}
+
+impl Hinter for CakeHelper {
+    type Hint = String;
+    fn hint(&self, _line: &str, _pos: usize, _ctx: &rustyline::Context<'_>) -> Option<String> {
+        None
+    }
+}
+
+impl Validator for CakeHelper {
+    fn validate(&self, _ctx: &mut rustyline::validate::ValidationContext) -> rustyline::Result<rustyline::validate::ValidationResult> {
+        Ok(rustyline::validate::ValidationResult::Valid(None))
+    }
+}
+
+impl Helper for CakeHelper {}
 
 /// Run the interactive loop. Never returns.
 pub fn run_interactive() -> ! {
@@ -28,10 +74,16 @@ pub fn run_interactive() -> ! {
         run_piped(&mut executor);
     }
 
-    let mut editor = match DefaultEditor::with_config(
-        Config::builder().edit_mode(EditMode::Emacs).build(),
+    let mut editor = match Editor::<CakeHelper, rustyline::history::DefaultHistory>::with_config(
+        Config::builder()
+            .edit_mode(EditMode::Emacs)
+            .completion_type(CompletionType::List)
+            .build(),
     ) {
-        Ok(e) => e,
+        Ok(mut e) => {
+            e.set_helper(Some(CakeHelper));
+            e
+        }
         Err(e) => {
             eprintln!("cake: failed to init line editor: {e}");
             std::process::exit(1);
@@ -137,7 +189,7 @@ fn history_path() -> Option<PathBuf> {
     Some(data_dir().join("history"))
 }
 
-fn save_history(editor: &mut DefaultEditor) {
+fn save_history(editor: &mut Editor<CakeHelper, rustyline::history::DefaultHistory>) {
     if let Some(path) = history_path() {
         if let Some(dir) = path.parent() {
             let _ = std::fs::create_dir_all(dir);

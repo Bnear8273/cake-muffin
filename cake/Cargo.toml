@@ -13,6 +13,7 @@ path = "src/main.rs"
 cake-blacklist = { path = "../crates/cake-blacklist" }
 cake-env = { path = "../crates/cake-env" }
 cake-exec = { path = "../crates/cake-exec" }
+cake-highlight = { path = "../crates/cake-highlight" }
 cake-platform = { path = "../crates/cake-platform" }
 cake-platform-unix = { path = "../crates/cake-platform-unix" }
 cake-syntax = { path = "../crates/cake-syntax" }
