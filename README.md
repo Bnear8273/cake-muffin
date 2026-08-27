@@ -1,10 +1,10 @@
 # cake
 
-A bash-compatible shell with a fish-grade interactive layer, written in Rust.
+A bash-compatible shell with a modern interactive layer, written in Rust.
 
 `cake` aims to be a drop-in-ish replacement for `bash` for everyday interactive
 use: the full control-flow / pipeline / expansion semantics of bash, wrapped in
-a modern line editor with syntax highlighting, tab completion, fish-style
+a modern line editor with syntax highlighting, tab completion, context-aware
 autosuggestion and a customizable prompt.
 
 ## Features
@@ -25,7 +25,7 @@ autosuggestion and a customizable prompt.
 - **Interactive layer**:
   - syntax highlighting (found commands green, unknown red, keywords magenta)
   - tab completion (commands, files, variables)
-  - fish-style autosuggestion from history
+  - context-aware autosuggestion from history
   - `~`-relative path prompt (override with `PS1`)
   - history + "command not found" blacklist persisted under the XDG data dir
 
@@ -61,7 +61,7 @@ shell logic and the OS-dependent layer:
 cake                  the binary: arg parsing, REPL loop, platform wiring
 crates/cake-syntax    lexer + recursive-descent parser + AST (no_std)
 crates/cake-exec      evaluator: control flow, expansion, pipelines, builtins
-crates/cake-env       fish-style EnvVar / EnvStack scoping
+crates/cake-env       copy-on-write EnvVar / EnvStack scoping
 crates/cake-proc      job/process data model
 crates/cake-platform  backend-neutral Platform trait (no_std)
 crates/cake-platform-unix   real backend (nix/libc)
@@ -110,5 +110,4 @@ implemented. Known gaps on the roadmap:
 
 ## License
 
-Apache-2.0. All dependencies are permissive (MIT / Apache-2.0 / BSD / ISC /
-Unlicense / BSL-1.0).
+Apache-2.0

@@ -1,6 +1,6 @@
 //! Interactive reader logic (pure, `#![no_std]`).
 //!
-//! Currently provides fish-style autosuggestion: given the line being typed
+//! Currently provides context-aware autosuggestion: given the line being typed
 //! and the command history, propose a suffix for the rest of the line.
 //! Line-editing itself lives in the std driver (rustyline).
 

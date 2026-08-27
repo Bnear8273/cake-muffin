@@ -4,7 +4,7 @@ use alloc::vec::Vec;
 
 /// Flags controlling the behaviour of a shell variable.
 ///
-/// Modeled after fish's `EnvVarFlags` and bash's variable attributes.
+/// Mirrors the export/readonly/path-list attributes of bash and other shells.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct EnvVarFlags(u8);
 
@@ -50,7 +50,7 @@ pub const PATH_DELIMITER: char = ':';
 /// The value of a shell variable.
 ///
 /// Immutable: values are shared cheaply via `Arc`, and "setting" produces a
-/// new `EnvVar`. This mirrors fish's copy-on-write `EnvVar`.
+/// new `EnvVar` (copy-on-write semantics).
 #[derive(Debug, Clone)]
 pub struct EnvVar {
     values: Arc<[String]>,

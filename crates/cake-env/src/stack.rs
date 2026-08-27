@@ -31,10 +31,10 @@ impl core::fmt::Display for EnvSetError {
 
 /// A stack of variable scopes.
 ///
-/// Modeled after fish's `EnvStack`. The bottom scope holds globals (seeded
-/// from the process environment by the shell driver and variables exported
-/// with `export`); local scopes are pushed for function calls and command
-/// blocks (`( )`, `{ }`). Lookup walks from the innermost scope outward.
+/// The bottom scope holds globals (seeded from the process environment by the
+/// shell driver and variables exported with `export`); local scopes are pushed
+/// for function calls and command blocks (`( )`, `{ }`). Lookup walks from
+/// the innermost scope outward.
 #[derive(Debug, Clone)]
 pub struct EnvStack {
     globals: Scope,

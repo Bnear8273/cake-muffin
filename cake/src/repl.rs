@@ -26,7 +26,7 @@ use rustyline::{CompletionType, Config, EditMode, Editor, Helper};
 
 use crate::import_env;
 
-/// rustyline helper: syntax highlighting, tab completion and fish-style
+/// rustyline helper: syntax highlighting, tab completion and context-aware
 /// autosuggestion.
 struct CakeHelper {
     exec: Rc<RefCell<Executor>>,

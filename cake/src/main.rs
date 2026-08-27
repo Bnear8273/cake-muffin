@@ -105,7 +105,7 @@ fn parse_args(args: &[String]) -> ParsedArgs {
 }
 
 fn print_help() {
-    println!("cake - a bash-compatible shell with a fish-grade interactive layer");
+    println!("cake - a bash-compatible shell with a modern interactive layer");
     println!();
     println!("Usage: cake [OPTIONS] [ARG...]");
     println!("       cake -c 'COMMAND' [ARG...]");
