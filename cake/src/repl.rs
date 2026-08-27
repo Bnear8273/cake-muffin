@@ -221,6 +221,7 @@ pub fn run_interactive() -> ! {
         // doesn't do).
         exec.expand_aliases = true;
         load_blacklist(&mut exec);
+        load_rc(&mut exec);
     }
 
     // When stdin is not a terminal (e.g. `echo 'ls' | cake`), read plain
@@ -430,6 +431,15 @@ pub(crate) fn load_blacklist(exec: &mut Executor) {
     let path = data_dir().join("blacklist");
     if let Ok(text) = std::fs::read_to_string(path) {
         exec.blacklist = CommandBlacklist::from_text(&text);
+    }
+}
+
+/// Evaluate the startup rc file (`$XDG_DATA_HOME/cake/rc`) if it exists.
+/// Aliases and prompt settings set there persist for the session.
+pub(crate) fn load_rc(exec: &mut Executor) {
+    let path = data_dir().join("rc");
+    if let Ok(text) = std::fs::read_to_string(path) {
+        let _ = exec.eval_str(&text);
     }
 }
 

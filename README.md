@@ -21,13 +21,24 @@ autosuggestion and a customizable prompt.
   quote removal.
 - **Conditionals**: `[ ... ]` and `[[ ... ]]` tests.
 - **Builtins**: `echo`, `printf`, `cd`, `pwd`, `export`, `unset`, `readonly`,
-  `shift`, `type`, `alias`, `unalias`, `exit`, `true`/`false`/`:` and more.
+  `shift`, `type`, `alias`, `unalias`, `exit`, `true`/`false`/`:`, `[`/`test`,
+  `read`, `source`, `break`/`continue`/`return`, `set` (`-e`/`-u`/`-f`,
+  `-o pipefail`), `shopt` (`nullglob`/`dotglob`/`nocaseglob`), `trap`
+  (`EXIT`/`ERR`/signals), `jobs`, `wait`, `fg`/`bg`, and more.
+- **Shell options**: `set -e` errexit with bash's exemption contexts,
+  `set -u` nounset, `set -o pipefail`.
+- **Job control**: background jobs (`cmd &`), `$!`, `jobs`, `wait [pid]`.
+- **Process substitution**: `<(cmd)` and `>(cmd)`.
+- **Special variables**: `$RANDOM`, `$LINENO`, `$SECONDS`, `$PPID`,
+  `$PWD`/`$OLDPWD`.
 - **Interactive layer**:
   - syntax highlighting (found commands green, unknown red, keywords magenta)
   - tab completion (commands, files, variables)
   - context-aware autosuggestion from history
   - `~`-relative path prompt (override with `PS1`)
   - history + "command not found" blacklist persisted under the XDG data dir
+  - a startup rc file at `$XDG_DATA_HOME/cake/rc` (aliases, `PS1`, ...) is
+    evaluated at session start
 
 ## Usage
 
@@ -99,13 +110,10 @@ $ cargo clippy -- -D warnings
 The bash core (parser, evaluator, expansion) and the interactive layer are
 implemented. Known gaps on the roadmap:
 
-- `[` / `test`, `read`, `source` as builtins
-- job control (`jobs`, `fg`, `bg`, `wait`)
-- `set -e` / `set -u` / `shopt`, `trap`
-- process substitution `<(...)`
-- `#` comments (currently lexed as a word)
-- `$RANDOM`, `$LINENO` and friends
-- a startup/rc file (aliases are session-scoped for now)
+- terminal job control (`fg`/`bg` on a real tty, `Ctrl-Z`)
+- `set -E` (errtrace), `trap DEBUG`, `extglob`, `history` expansion
+- `$(<file)` shorthand, `disown`, `local`
+- `$BASH_ENV` for non-interactive startup (the rc file covers interactive)
 - a Windows backend (`run_in_child` is `fork`-based today)
 
 ## License
