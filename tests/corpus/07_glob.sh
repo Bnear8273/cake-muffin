@@ -1,4 +1,3 @@
-# cake:xfail
 cd /tmp
 touch cake_glob_aaa cake_glob_bbb
 echo cake_glob_*

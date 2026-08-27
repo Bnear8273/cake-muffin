@@ -1,4 +1,3 @@
-# cake:xfail
 x="hello world"
 echo "${#x}"
 echo "${x:0:5}"

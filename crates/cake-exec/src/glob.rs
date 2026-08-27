@@ -2,6 +2,7 @@
 //! in M2c, by glob expansion.
 
 use alloc::string::String;
+use alloc::vec;
 use alloc::vec::Vec;
 
 /// Match `text` against shell pattern `pat`.
@@ -93,7 +94,80 @@ pub fn has_glob_chars(s: &str) -> bool {
     s.bytes().any(|b| matches!(b, b'*' | b'?' | b'['))
 }
 
-/// Expand a glob pattern against the filesystem. M2c.
-pub fn expand_glob(_pat: &str) -> Vec<String> {
-    Vec::new()
+/// Expand a glob pattern against the filesystem.
+///
+/// Walks each path component in turn, matching entries with [`glob_match`].
+/// `*`/`?`/`[...]` do not match a leading `.` unless the pattern component
+/// starts with one. Results are sorted (bash sorts lexicographically). Returns
+/// an empty `Vec` when nothing matches (the caller keeps the literal pattern).
+pub fn expand_glob(pattern: &str) -> Vec<String> {
+    let p = cake_platform::get();
+    let abs = pattern.starts_with('/');
+    let parts: Vec<&str> = pattern
+        .trim_start_matches('/')
+        .split('/')
+        .filter(|s| !s.is_empty())
+        .collect();
+    if parts.is_empty() {
+        return Vec::new();
+    }
+    let sep = p.path_separator();
+    // Accumulated matched path prefixes (`""` = relative to cwd).
+    let mut results: Vec<String> = vec![String::new()];
+
+    for (i, part) in parts.iter().enumerate() {
+        let mut next: Vec<String> = Vec::new();
+        for base in &results {
+            let dir = if i == 0 && !abs {
+                "."
+            } else if base.is_empty() {
+                "/"
+            } else {
+                base
+            };
+            let entries = match p.read_dir(dir) {
+                Ok(e) => e,
+                Err(_) => continue,
+            };
+            let join = |name: &str| {
+                let mut s = String::new();
+                if i > 0 || abs {
+                    s.push_str(base);
+                    if !s.is_empty() || abs {
+                        s.push(sep);
+                    }
+                }
+                s.push_str(name);
+                s
+            };
+            if has_glob_chars(part) {
+                for name in &entries {
+                    if name.starts_with('.') && !part.starts_with('.') {
+                        continue;
+                    }
+                    if glob_match(part, name) {
+                        next.push(join(name));
+                    }
+                }
+            } else if *part == "." {
+                next.push(base.clone());
+            } else if *part == ".." {
+                let mut s = String::new();
+                s.push_str(base);
+                if !s.is_empty() || abs {
+                    s.push(sep);
+                }
+                s.push_str("..");
+                next.push(s);
+            } else if entries.iter().any(|e| e == part) {
+                next.push(join(part));
+            }
+        }
+        results = next;
+        if results.is_empty() {
+            break;
+        }
+    }
+    results.sort();
+    results
 }

@@ -205,6 +205,10 @@ impl Platform for MockPlatform {
         FileInfo::default()
     }
 
+    fn read_dir(&self, _path: &str) -> Result<Vec<String>, PlatformError> {
+        Err(PlatformError::Unsupported)
+    }
+
     fn xdg_dir(&self, _kind: XdgKind) -> String {
         self.xdg.lock().unwrap().clone()
     }

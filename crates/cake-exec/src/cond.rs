@@ -11,9 +11,11 @@ use crate::expand::{expand_plain_string, ExpandCtx};
 pub fn eval_cond(exec: &mut Executor, text: &str) -> ProcStatus {
     let result = {
         let ctx = ExpandCtx {
-            env: &exec.env,
+            env: &mut exec.env,
             last_status: exec.last_status,
             positional: &exec.positional,
+            functions: &exec.functions,
+            aliases: &exec.aliases,
             shell_pid: exec.shell_pid,
         };
         let mut p = CondParser::new(text, ctx);
@@ -186,7 +188,7 @@ impl<'a> CondParser<'a> {
 
     fn expand_word(&mut self) -> Result<String, String> {
         let word = self.eat().ok_or_else(|| "expected word".to_string())?;
-        let fields = expand_plain_string(&self.ctx, &word)
+        let fields = expand_plain_string(&mut self.ctx, &word)
             .map_err(|e| alloc::format!("expansion error: {e}"))?;
         // An empty expansion (e.g. `""` or an unset variable) yields zero
         // fields; as a `[[ ]]` operand that is the empty string.

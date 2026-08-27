@@ -54,7 +54,7 @@ impl Slot {
 }
 
 /// Process a command's redirect list into concrete fds.
-pub fn setup_redirects(ctx: &ExpandCtx, redirects: &[Redirect]) -> Result<CommandFds, String> {
+pub fn setup_redirects(ctx: &mut ExpandCtx, redirects: &[Redirect]) -> Result<CommandFds, String> {
     let mut fds = CommandFds::default();
     for r in redirects {
         apply_redirect(ctx, r, &mut fds)?;
@@ -70,7 +70,7 @@ fn slot_mut(fds: &mut CommandFds, slot: Slot) -> &mut ChildFd {
     }
 }
 
-fn apply_redirect(ctx: &ExpandCtx, r: &Redirect, fds: &mut CommandFds) -> Result<(), String> {
+fn apply_redirect(ctx: &mut ExpandCtx, r: &Redirect, fds: &mut CommandFds) -> Result<(), String> {
     let output_default = matches!(
         r.kind,
         RedirectKind::Write

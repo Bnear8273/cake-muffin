@@ -1,4 +1,3 @@
-# cake:xfail
 echo file_{1,2,3}.txt
 echo {a..c}
 mkdir -p /tmp/cake_brace && cd /tmp/cake_brace

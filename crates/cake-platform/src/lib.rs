@@ -363,6 +363,8 @@ pub trait Platform: Sync {
     fn is_executable(&self, path: &str) -> bool;
     /// Filesystem facts for test operators.
     fn stat(&self, path: &str) -> FileInfo;
+    /// List the entry names in `path` (glob expansion support).
+    fn read_dir(&self, path: &str) -> Result<Vec<String>, PlatformError>;
     fn xdg_dir(&self, kind: XdgKind) -> String;
 
     // --- CWD ---

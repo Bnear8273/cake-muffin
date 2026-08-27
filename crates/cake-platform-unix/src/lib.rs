@@ -409,6 +409,16 @@ impl Platform for UnixPlatform {
         info
     }
 
+    fn read_dir(&self, path: &str) -> Result<Vec<String>, PlatformError> {
+        let mut names: Vec<String> = std::fs::read_dir(path)
+            .map_err(|e| PlatformError::Io(format!("read_dir {path}: {e}")))?
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        Ok(names)
+    }
+
     fn xdg_dir(&self, kind: XdgKind) -> String {
         use std::env;
         let (env_name, fallback_sub) = match kind {

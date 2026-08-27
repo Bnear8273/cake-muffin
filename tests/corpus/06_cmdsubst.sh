@@ -1,4 +1,3 @@
-# cake:xfail
 echo "date: $(date +%Y)"
 files=$(ls /etc | head -1)
 echo "first: $files"

@@ -299,8 +299,8 @@ impl Executor {
     }
 
     fn setup_cmd_fds(&mut self, cmd: &Command) -> Result<CommandFds, String> {
-        let ctx = self.ctx();
-        setup_redirects(&ctx, &cmd.redirects)
+        let mut ctx = self.ctx();
+        setup_redirects(&mut ctx, &cmd.redirects)
     }
 
     // --- commands --------------------------------------------------------
@@ -379,8 +379,8 @@ impl Executor {
         for a in &sc.assignments {
             let v = match &a.value {
                 AssignmentValue::Word(w) => {
-                    let ctx = self.ctx();
-                    expand_word_quoted(&ctx, w)?
+                    let mut ctx = self.ctx();
+                    expand_word_quoted(&mut ctx, w)?
                 }
                 _ => String::new(),
             };
@@ -394,9 +394,9 @@ impl Executor {
         // Expand the command words.
         let mut argv: Vec<String> = Vec::new();
         {
-            let ctx = self.ctx();
+            let mut ctx = self.ctx();
             for w in &sc.words {
-                let fields = expand_word(&ctx, w)?;
+                let fields = expand_word(&mut ctx, w)?;
                 argv.extend(fields);
             }
         }
@@ -558,9 +558,9 @@ impl Executor {
         let words: Vec<String> = match &fc.in_words {
             Some(in_words) => {
                 let mut out = Vec::new();
-                let ctx = self.ctx();
+                let mut ctx = self.ctx();
                 for w in in_words {
-                    if let Ok(fields) = expand_word(&ctx, w) {
+                    if let Ok(fields) = expand_word(&mut ctx, w) {
                         out.extend(fields);
                     }
                 }
@@ -589,18 +589,18 @@ impl Executor {
 
     fn eval_case(&mut self, cs: &CaseCommand) -> ProcStatus {
         let word = {
-            let ctx = self.ctx();
-            expand_word(&ctx, &cs.word).unwrap_or_default()
+            let mut ctx = self.ctx();
+            expand_word_quoted(&mut ctx, &cs.word).unwrap_or_default()
         };
-        let word_str = word.into_iter().next().unwrap_or_default();
         for arm in &cs.arms {
             for pat in &arm.patterns {
                 let pat_str = {
-                    let ctx = self.ctx();
-                    expand_word(&ctx, pat).unwrap_or_default()
+                    let mut ctx = self.ctx();
+                    // Case patterns are single words: no field splitting and
+                    // no pathname expansion (`*` stays a pattern).
+                    expand_word_quoted(&mut ctx, pat).unwrap_or_default()
                 };
-                let pat_str = pat_str.into_iter().next().unwrap_or_default();
-                if glob_match(&pat_str, &word_str) {
+                if glob_match(&pat_str, &word) {
                     return self.eval_list(&arm.body);
                 }
             }
@@ -610,11 +610,13 @@ impl Executor {
 
     // --- helpers ---------------------------------------------------------
 
-    fn ctx(&self) -> ExpandCtx<'_> {
+    fn ctx(&mut self) -> ExpandCtx<'_> {
         ExpandCtx {
-            env: &self.env,
+            env: &mut self.env,
             last_status: self.last_status,
             positional: &self.positional,
+            functions: &self.functions,
+            aliases: &self.aliases,
             shell_pid: self.shell_pid,
         }
     }
@@ -672,7 +674,7 @@ impl Executor {
     /// value ends in a blank, e.g. `alias sudo='sudo '`). The alias value is
     /// re-read as shell words and expanded normally, so `$HOME`, quotes and
     /// tilde work inside it. Loop-protected against self-referential aliases.
-    fn expand_aliases(&self, argv: Vec<String>) -> Vec<String> {
+    fn expand_aliases(&mut self, argv: Vec<String>) -> Vec<String> {
         if !self.expand_aliases {
             return argv;
         }
@@ -682,21 +684,22 @@ impl Executor {
         while i < argv.len() {
             let word = &argv[i];
             let expand_next = if is_alias_name(word) && !seen.contains(word.as_str()) {
-                match self.aliases.get(word) {
+                match self.aliases.get(word).cloned() {
                     Some(val) => {
                         seen.insert(word.as_str());
-                        match cake_syntax::split_command_line(val) {
+                        let trailing = val.ends_with(' ');
+                        match cake_syntax::split_command_line(&val) {
                             Ok(sub) => {
                                 for s in sub {
                                     let w =
                                         cake_syntax::word::parse_word(&s, cake_syntax::Span::new(0, 0));
-                                    let ctx = self.ctx();
-                                    match expand_word(&ctx, &w) {
+                                    let mut ctx = self.ctx();
+                                    match expand_word(&mut ctx, &w) {
                                         Ok(fields) => out.extend(fields),
                                         Err(_) => out.push(s),
                                     }
                                 }
-                                val.ends_with(' ')
+                                trailing
                             }
                             Err(_) => {
                                 out.push(word.clone());
@@ -747,7 +750,7 @@ mod tests {
 
     #[test]
     fn expands_simple_alias_keeping_args() {
-        let e = exec_with_aliases(&[("ls", "ls --color=auto")]);
+        let mut e = exec_with_aliases(&[("ls", "ls --color=auto")]);
         let argv = e.expand_aliases(vec!["ls".into(), "-la".into()]);
         assert_eq!(argv, ["ls", "--color=auto", "-la"]);
     }
@@ -762,21 +765,21 @@ mod tests {
 
     #[test]
     fn trailing_space_chains_to_next_word() {
-        let e = exec_with_aliases(&[("sudo", "sudo "), ("ls", "ls --color=auto")]);
+        let mut e = exec_with_aliases(&[("sudo", "sudo "), ("ls", "ls --color=auto")]);
         let argv = e.expand_aliases(vec!["sudo".into(), "ls".into()]);
         assert_eq!(argv, ["sudo", "ls", "--color=auto"]);
     }
 
     #[test]
     fn self_referential_alias_does_not_loop() {
-        let e = exec_with_aliases(&[("a", "b"), ("b", "a")]);
+        let mut e = exec_with_aliases(&[("a", "b"), ("b", "a")]);
         let argv = e.expand_aliases(vec!["a".into()]);
         assert_eq!(argv, ["b"]);
     }
 
     #[test]
     fn path_word_is_not_expanded() {
-        let e = exec_with_aliases(&[("ls", "ls --color=auto")]);
+        let mut e = exec_with_aliases(&[("ls", "ls --color=auto")]);
         let argv = e.expand_aliases(vec!["/bin/ls".into()]);
         assert_eq!(argv, ["/bin/ls"]);
     }

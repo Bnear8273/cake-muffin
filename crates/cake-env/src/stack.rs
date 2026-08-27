@@ -6,7 +6,7 @@ use alloc::vec::Vec;
 use crate::env_var::EnvVar;
 
 /// A single lexical scope: a set of variable bindings.
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 struct Scope {
     vars: BTreeMap<String, EnvVar>,
 }
@@ -35,7 +35,7 @@ impl core::fmt::Display for EnvSetError {
 /// from the process environment by the shell driver and variables exported
 /// with `export`); local scopes are pushed for function calls and command
 /// blocks (`( )`, `{ }`). Lookup walks from the innermost scope outward.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct EnvStack {
     globals: Scope,
     locals: Vec<Scope>,
