@@ -196,8 +196,9 @@ impl<'a> Lexer<'a> {
                 '!' => {
                     let start = self.pos;
                     // `!` negates the next pipeline only when followed by a
-                    // blank or at the end of input.
-                    if matches!(self.peek2(), None | Some(' ' | '\t' | '\n' | ';' | '&' | '|' | '(')) {
+                    // blank or at the end of input; `!(pattern)` (no space)
+                    // is an extglob opener and stays a word.
+                    if matches!(self.peek2(), None | Some(' ' | '\t' | '\n' | ';' | '&' | '|')) {
                         self.advance();
                         return Ok(self.mk(TokenKind::Bang, start));
                     }
@@ -434,15 +435,26 @@ impl<'a> Lexer<'a> {
             // `(` and `)` are always word terminators in bash (they are
             // metacharacters): `foo()`, `arr=(...)`, `a) pattern`, `echo a(b)`
             // is a syntax error. Redirection targets may carry `>(...)`
-            // process substitution, so parens are kept there.
-            if !in_dquote && matches!(c, '(' | ')') && !self.ctx.in_redir {
+            // process substitution, so parens are kept there. An extglob
+            // opener `?(` `*(` `+(` `@(` `!(` stays inside the word (bash
+            // lexes these unconditionally; `shopt extglob` decides at
+            // expansion time).
+            if !in_dquote && c == '(' && !self.ctx.in_redir {
+                let prev = (self.pos > 0).then(|| self.src.as_bytes()[self.pos as usize - 1]);
+                if matches!(prev, Some(b'?') | Some(b'*') | Some(b'+') | Some(b'@') | Some(b'!')) {
+                    self.advance(); // (
+                    self.skip_command_subst_after_open()?;
+                    continue;
+                }
+            }
+            if (self.ctx.in_cond || self.ctx.in_arith) && !in_dquote && matches!(c, '(' | ')') {
                 break;
             }
             // `]]` closes a conditional even inside a word boundary when in_cond.
             if self.ctx.in_cond && !in_dquote && self.rest().starts_with("]]") {
                 break;
             }
-            if (self.ctx.in_cond || self.ctx.in_arith) && !in_dquote && matches!(c, '(' | ')') {
+            if !in_dquote && matches!(c, '(' | ')') && !self.ctx.in_redir {
                 break;
             }
             // In command position, an unquoted `!` that begins a fresh word

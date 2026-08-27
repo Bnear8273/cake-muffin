@@ -42,6 +42,7 @@ pub fn run_builtin(exec: &mut Executor, name: &str, args: &[String]) -> Option<R
         "trap" => trap(exec, args),
         "jobs" => jobs(exec, args),
         "wait" => wait(exec, args),
+        "eval" => eval_(exec, args),
         "fg" => fg_bg(exec, args, true),
         "bg" => fg_bg(exec, args, false),
         _ => return None,
@@ -647,7 +648,7 @@ fn source(exec: &mut Executor, args: &[String]) -> Result<ProcStatus, String> {
 }
 
 /// Read an entire file into a string via the platform fd layer.
-fn read_file(path: &str) -> Result<String, String> {
+pub(crate) fn read_file(path: &str) -> Result<String, String> {
     let p = cake_platform::get();
     let fd = p
         .open_file(path, cake_platform::FileOpenMode::Read)
@@ -859,6 +860,18 @@ fn is_identifier(s: &str) -> bool {
     chars.all(|c| c == '_' || c.is_ascii_alphanumeric())
 }
 
+// --- eval ---
+
+/// `eval "cmd..."` — parse and run the joined arguments in the current shell.
+fn eval_(exec: &mut Executor, args: &[String]) -> Result<ProcStatus, String> {
+    if args.len() <= 1 {
+        return Ok(ProcStatus::Exit(0));
+    }
+    let src = args[1..].join(" ");
+    let outcome = exec.eval_str(&src);
+    Ok(outcome.status)
+}
+
 // --- jobs ---
 
 /// `jobs [-l]` — list background jobs.
@@ -1001,6 +1014,8 @@ fn set_(exec: &mut Executor, args: &[String]) -> Result<ProcStatus, String> {
             let value = !off;
             match name.as_str() {
                 "errexit" => exec.errexit = value,
+                "errtrace" => exec.errtrace = value,
+                "functrace" => exec.functrace = value,
                 "nounset" => exec.nounset = value,
                 "noglob" => exec.noglob = value,
                 "pipefail" => exec.pipefail = value,
@@ -1016,8 +1031,10 @@ fn set_(exec: &mut Executor, args: &[String]) -> Result<ProcStatus, String> {
         for c in body.chars() {
             match c {
                 'e' => exec.errexit = !off,
+                'E' => exec.errtrace = !off,
                 'u' => exec.nounset = !off,
                 'f' => exec.noglob = !off,
+                'T' => exec.functrace = !off,
                 'v' | 'x' | 'n' | 'C' | 'm' | 'a' | 'b' => {
                     // Accepted for compatibility; not yet implemented.
                 }
@@ -1047,6 +1064,8 @@ fn set_(exec: &mut Executor, args: &[String]) -> Result<ProcStatus, String> {
 fn list_set_options(exec: &Executor) {
     let opts = [
         ("errexit", exec.errexit),
+        ("errtrace", exec.errtrace),
+        ("functrace", exec.functrace),
         ("noglob", exec.noglob),
         ("nounset", exec.nounset),
         ("pipefail", exec.pipefail),
@@ -1100,7 +1119,7 @@ fn shopt(exec: &mut Executor, args: &[String]) -> Result<ProcStatus, String> {
     }
     // Print mode: no args → all options; with names → those options.
     let list: Vec<&str> = if names.is_empty() {
-        vec!["nullglob", "dotglob", "nocaseglob"]
+        vec!["nullglob", "dotglob", "nocaseglob", "extglob"]
     } else {
         names
     };
@@ -1129,6 +1148,7 @@ fn shopt_slot(exec: &Executor, name: &str) -> Option<bool> {
         "nullglob" => exec.shopt.nullglob,
         "dotglob" => exec.shopt.dotglob,
         "nocaseglob" => exec.shopt.nocaseglob,
+        "extglob" => exec.shopt.extglob,
         _ => return None,
     })
 }
@@ -1138,6 +1158,7 @@ fn shopt_slot_mut<'a>(exec: &'a mut Executor, name: &str) -> Option<&'a mut bool
         "nullglob" => &mut exec.shopt.nullglob,
         "dotglob" => &mut exec.shopt.dotglob,
         "nocaseglob" => &mut exec.shopt.nocaseglob,
+        "extglob" => &mut exec.shopt.extglob,
         _ => return None,
     })
 }
@@ -1177,6 +1198,10 @@ fn trap(exec: &mut Executor, args: &[String]) -> Result<ProcStatus, String> {
         exec.traps.retain(|(t, _)| *t != trigger);
         if action != "-" {
             exec.traps.push((trigger, action.clone()));
+            if trigger == TrapTrigger::Debug {
+                // A trap registered inside a sub-shell applies from now on.
+                exec.in_subshell = false;
+            }
             if let TrapTrigger::Signal(sig) = trigger {
                 // Record the signal so the trap can fire at the next
                 // evaluation boundary. (`trap -` leaves the recording
@@ -1197,7 +1222,7 @@ fn parse_trigger(name: &str) -> Option<TrapTrigger> {
     let sig = match name {
         "EXIT" | "0" => return Some(TrapTrigger::Exit),
         "ERR" => return Some(TrapTrigger::Err),
-        "DEBUG" => return None,
+        "DEBUG" => return Some(TrapTrigger::Debug),
         "HUP" => Signal::Other(1),
         "INT" => Signal::Interrupt,
         "QUIT" => Signal::Quit,
@@ -1229,6 +1254,7 @@ fn trigger_name(trigger: TrapTrigger) -> alloc::string::String {
     match trigger {
         TrapTrigger::Exit => "EXIT".into(),
         TrapTrigger::Err => "ERR".into(),
+        TrapTrigger::Debug => "DEBUG".into(),
         TrapTrigger::Signal(s) => match s {
             Signal::Interrupt => "INT".into(),
             Signal::Quit => "QUIT".into(),
@@ -1250,7 +1276,7 @@ pub fn is_builtin(name: &str) -> bool {
         "echo" | "printf" | "true" | ":" | "false" | "exit" | "cd" | "pwd" | "type"
             | "export" | "unset" | "readonly" | "shift" | "command" | "alias" | "unalias"
             | "test" | "[" | "break" | "continue" | "return" | "source" | "." | "read"
-            | "set" | "shopt" | "trap" | "jobs" | "wait" | "fg" | "bg"
+            | "set" | "shopt" | "trap" | "jobs" | "wait" | "fg" | "bg" | "eval"
     )
 }
 
@@ -1260,7 +1286,7 @@ pub fn builtin_names() -> &'static [&'static str] {
         "echo", "printf", "true", ":", "false", "exit", "cd", "pwd", "type", "export",
         "unset", "readonly", "shift", "command", "alias", "unalias", "test", "[", "break",
         "continue", "return", "source", ".", "read", "set", "shopt", "trap",
-        "jobs", "wait", "fg", "bg",
+        "jobs", "wait", "fg", "bg", "eval",
     ]
 }
 

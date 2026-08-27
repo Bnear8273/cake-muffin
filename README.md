@@ -29,6 +29,9 @@ autosuggestion and a customizable prompt.
   `set -u` nounset, `set -o pipefail`.
 - **Job control**: background jobs (`cmd &`), `$!`, `jobs`, `wait [pid]`.
 - **Process substitution**: `<(cmd)` and `>(cmd)`.
+- **extglob**: `?(p)` `*(p)` `+(p)` `@(p)` `!(p)` patterns in globbing,
+  `case` and `[[ == ]]` (the latter always active, like bash).
+- **`$(<file)`** shorthand for reading a file.
 - **Special variables**: `$RANDOM`, `$LINENO`, `$SECONDS`, `$PPID`,
   `$PWD`/`$OLDPWD`.
 - **Interactive layer**:
@@ -111,8 +114,8 @@ The bash core (parser, evaluator, expansion) and the interactive layer are
 implemented. Known gaps on the roadmap:
 
 - terminal job control (`fg`/`bg` on a real tty, `Ctrl-Z`)
-- `set -E` (errtrace), `trap DEBUG`, `extglob`, `history` expansion
-- `$(<file)` shorthand, `disown`, `local`
+- `history` expansion, `disown`, `local`
+- `BASH_ENV`/`ENV`-style script startup files
 - `$BASH_ENV` for non-interactive startup (the rc file covers interactive)
 - a Windows backend (`run_in_child` is `fork`-based today)
 

@@ -1,6 +1,8 @@
-//! Pathname pattern matching (`*`, `?`, `[...]`) used by `case` patterns and,
-//! in M2c, by glob expansion.
+//! Pathname pattern matching (`*`, `?`, `[...]`, and with `extglob` the
+//! `?(...)` `*(...)` `+(...)` `@(...)` `!(...)` groups) used by `case`
+//! patterns and, in M2c, by glob expansion.
 
+use alloc::collections::BTreeSet;
 use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
@@ -8,101 +10,258 @@ use alloc::vec::Vec;
 /// Match `text` against shell pattern `pat`.
 ///
 /// Supports `*` (any sequence), `?` (one char) and `[...]` character classes
-/// with `!`/`^` negation and `a-z` ranges. `*` does not match a leading `.`
-/// (like bash's pathname expansion), matching bash's `case` behaviour too.
+/// with `!`/`^` negation and `a-z` ranges, plus extglob groups when
+/// `extglob` is set.
 pub fn glob_match(pat: &str, text: &str) -> bool {
-    match_inner(pat.as_bytes(), text.as_bytes(), false)
+    match_inner(pat.as_bytes(), text.as_bytes(), false, false)
 }
 
 /// Case-insensitive glob match (ASCII folding), for `shopt nocaseglob`.
 pub fn glob_match_case(pat: &str, text: &str) -> bool {
-    match_inner(pat.as_bytes(), text.as_bytes(), true)
+    match_inner(pat.as_bytes(), text.as_bytes(), true, false)
+}
+
+/// Match with extglob groups toggled by `extglob` (`shopt -s extglob`).
+pub fn glob_match_ext(pat: &str, text: &str, nocase: bool, extglob: bool) -> bool {
+    match_inner(pat.as_bytes(), text.as_bytes(), nocase, extglob)
 }
 
 fn fold(b: u8) -> u8 {
     b.to_ascii_lowercase()
 }
 
-fn match_inner(pat: &[u8], text: &[u8], nocase: bool) -> bool {
-    let (mut p, mut t) = (0usize, 0usize);
-    let (mut star_p, mut star_t): (Option<usize>, Option<usize>) = (None, None);
+// --- pattern AST ---------------------------------------------------------
 
-    while t < text.len() {
-        if p < pat.len() && (pat[p] == b'?' || pat[p] == text[t] || (nocase && fold(pat[p]) == fold(text[t]))) {
-            p += 1;
-            t += 1;
-        } else if p < pat.len() && pat[p] == b'[' {
-            if let Some(len) = match_class(pat, p, text[t], nocase) {
-                p += len;
-                t += 1;
-            } else if let Some(sp) = star_p {
-                p = sp + 1;
-                star_t = Some(star_t.unwrap() + 1);
-                t = star_t.unwrap();
-            } else {
-                return false;
-            }
-        } else if p < pat.len() && pat[p] == b'*' {
-            star_p = Some(p);
-            star_t = Some(t);
-            p += 1;
-        } else if star_p.is_some() {
-            p = star_p.unwrap() + 1;
-            star_t = Some(star_t.unwrap() + 1);
-            t = star_t.unwrap();
-        } else {
-            return false;
-        }
-    }
-    while p < pat.len() && pat[p] == b'*' {
-        p += 1;
-    }
-    p == pat.len()
+#[derive(Debug, Clone)]
+enum PNode {
+    /// A literal byte.
+    Lit(u8),
+    /// `?` — any single byte.
+    Any,
+    /// `*` — any run of bytes.
+    Star,
+    /// `[...]`
+    Class { negated: bool, ranges: Vec<(u8, u8)> },
+    /// `?(p)` `*(p)` `+(p)` `@(p)` `!(p)`.
+    Group { op: u8, alts: Vec<Vec<PNode>> },
 }
 
-/// If `pat[p..]` is a character class matching `c`, return its total byte
-/// length (including `[` and `]`). `\`-escaped bytes are honoured.
-fn match_class(pat: &[u8], p: usize, c: u8, nocase: bool) -> Option<usize> {
-    let mut i = p + 1;
-    let negated = i < pat.len() && (pat[i] == b'!' || pat[i] == b'^');
-    if negated {
-        i += 1;
-    }
-    let mut matched = false;
-    let mut first = true;
-    while i < pat.len() {
-        if pat[i] == b']' && !first {
-            if matched != negated {
-                return Some(i + 1 - p);
+/// Parse a pattern into nodes. Stops at an unescaped `|` or `)` when
+/// `top` is false (a group alternative).
+fn parse_nodes(pat: &[u8], i: &mut usize, extglob: bool, top: bool) -> Vec<PNode> {
+    let mut nodes = Vec::new();
+    while *i < pat.len() {
+        let c = pat[*i];
+        match c {
+            b'\\' if *i + 1 < pat.len() => {
+                nodes.push(PNode::Lit(pat[*i + 1]));
+                *i += 2;
             }
-            return None;
+            b'?' => {
+                nodes.push(PNode::Any);
+                *i += 1;
+            }
+            b'*' => {
+                nodes.push(PNode::Star);
+                *i += 1;
+            }
+            b'[' => nodes.push(parse_class(pat, i)),
+            b')' | b'|' if !top => break,
+            b'(' if extglob && *i > 0 && matches!(pat[*i - 1], b'?' | b'*' | b'+' | b'@' | b'!') => {
+                let op = pat[*i - 1];
+                nodes.pop(); // drop the opener byte parsed as a literal
+                *i += 1;
+                let mut alts = Vec::new();
+                loop {
+                    let alt = parse_nodes(pat, i, extglob, false);
+                    alts.push(alt);
+                    if *i >= pat.len() || pat[*i] != b'|' {
+                        break;
+                    }
+                    *i += 1;
+                }
+                // Consume the closing `)` if present; tolerate unterminated.
+                if *i < pat.len() && pat[*i] == b')' {
+                    *i += 1;
+                }
+                nodes.push(PNode::Group { op, alts });
+            }
+            _ => {
+                nodes.push(PNode::Lit(c));
+                *i += 1;
+            }
+        }
+    }
+    nodes
+}
+
+fn parse_class(pat: &[u8], i: &mut usize) -> PNode {
+    let start = *i;
+    *i += 1; // '['
+    let negated = *i < pat.len() && (pat[*i] == b'!' || pat[*i] == b'^');
+    if negated {
+        *i += 1;
+    }
+    let mut ranges: Vec<(u8, u8)> = Vec::new();
+    let mut first = true;
+    while *i < pat.len() {
+        if pat[*i] == b']' && !first {
+            *i += 1;
+            return PNode::Class { negated, ranges };
         }
         first = false;
-        if pat[i] == b'\\' && i + 1 < pat.len() {
-            i += 1;
+        if pat[*i] == b'\\' && *i + 1 < pat.len() {
+            *i += 1;
         }
-        // Range a-z.
-        if i + 2 < pat.len() && pat[i + 1] == b'-' && pat[i + 2] != b']' {
-            let (lo, hi) = (pat[i], pat[i + 2]);
-            let c = if nocase { fold(c) } else { c };
-            let (lo, hi) = if nocase { (fold(lo), fold(hi)) } else { (lo, hi) };
-            if lo <= c && c <= hi {
-                matched = true;
-            }
-            i += 3;
+        if *i + 2 < pat.len() && pat[*i + 1] == b'-' && pat[*i + 2] != b']' {
+            ranges.push((pat[*i], pat[*i + 2]));
+            *i += 3;
         } else {
-            if pat[i] == c || (nocase && fold(pat[i]) == fold(c)) {
-                matched = true;
-            }
-            i += 1;
+            ranges.push((pat[*i], pat[*i]));
+            *i += 1;
         }
     }
-    None
+    // Unterminated class: treat `[` as a literal.
+    *i = start + 1;
+    PNode::Class { negated: false, ranges: vec![(b'[', b'[')] }
+}
+
+fn class_matches(c: u8, negated: bool, ranges: &[(u8, u8)], nocase: bool) -> bool {
+    let c = if nocase { fold(c) } else { c };
+    let mut matched = false;
+    for (lo, hi) in ranges {
+        let (lo, hi) = if nocase { (fold(*lo), fold(*hi)) } else { (*lo, *hi) };
+        if lo <= c && c <= hi {
+            matched = true;
+            break;
+        }
+    }
+    matched != negated
+}
+
+// --- matching ------------------------------------------------------------
+
+/// Does `nodes[i..]` match `text[t..end]`? Failed states are memoised.
+fn match_nodes(
+    nodes: &[PNode],
+    text: &[u8],
+    t: usize,
+    end: usize,
+    i: usize,
+    memo: &mut BTreeSet<(usize, usize)>,
+    nocase: bool,
+) -> bool {
+    if i == nodes.len() {
+        return t == end;
+    }
+    if t > end {
+        return false;
+    }
+    if memo.contains(&(i, t)) {
+        return false;
+    }
+    let ok = match &nodes[i] {
+        PNode::Lit(c) => {
+            t < end
+                && (*c == text[t] || (nocase && fold(*c) == fold(text[t])))
+                && match_nodes(nodes, text, t + 1, end, i + 1, memo, nocase)
+        }
+        PNode::Any => {
+            t < end && match_nodes(nodes, text, t + 1, end, i + 1, memo, nocase)
+        }
+        PNode::Star => {
+            let mut k = end;
+            loop {
+                if match_nodes(nodes, text, t + k, end, i + 1, memo, nocase) {
+                    break true;
+                }
+                if k == 0 {
+                    break false;
+                }
+                k -= 1;
+            }
+        }
+        PNode::Class { negated, ranges } => {
+            t < end
+                && class_matches(text[t], *negated, ranges, nocase)
+                && match_nodes(nodes, text, t + 1, end, i + 1, memo, nocase)
+        }
+        PNode::Group { op, alts } => match op {
+            // `@(p)`: exactly one alternative.
+            b'@' => (t..=end).any(|k| {
+                (k > t)
+                    && alt_exact(alts, text, t, k, nocase)
+                    && match_nodes(nodes, text, k, end, i + 1, memo, nocase)
+            }),
+            // `?(p)`: zero or one.
+            b'?' => {
+                match_nodes(nodes, text, t, end, i + 1, memo, nocase)
+                    || (t..=end).any(|k| {
+                        (k > t)
+                            && alt_exact(alts, text, t, k, nocase)
+                            && match_nodes(nodes, text, k, end, i + 1, memo, nocase)
+                    })
+            }
+            // `*(p)`: zero or more.
+            b'*' => {
+                match_nodes(nodes, text, t, end, i + 1, memo, nocase)
+                    || (t + 1..=end).any(|k| {
+                        alt_exact(alts, text, t, k, nocase)
+                            && match_nodes(nodes, text, k, end, i, memo, nocase)
+                    })
+            }
+            // `+(p)`: one or more.
+            b'+' => (t + 1..=end).any(|k| {
+                alt_exact(alts, text, t, k, nocase)
+                    && (match_nodes(nodes, text, k, end, i + 1, memo, nocase)
+                        || match_nodes(nodes, text, k, end, i, memo, nocase))
+            }),
+            // `!(p)`: any string not matching an alternative.
+            b'!' => (t..=end).any(|k| {
+                !alt_exact(alts, text, t, k, nocase)
+                    && match_nodes(nodes, text, k, end, i + 1, memo, nocase)
+            }),
+            _ => false,
+        },
+    };
+    if !ok {
+        memo.insert((i, t));
+    }
+    ok
+}
+
+/// Does any alternative exactly match `text[t..k]`?
+fn alt_exact(alts: &[Vec<PNode>], text: &[u8], t: usize, k: usize, nocase: bool) -> bool {
+    alts.iter().any(|alt| {
+        let mut memo = BTreeSet::new();
+        match_nodes(alt, text, t, k, 0, &mut memo, nocase)
+    })
+}
+
+fn match_inner(pat: &[u8], text: &[u8], nocase: bool, extglob: bool) -> bool {
+    let nodes = parse_nodes(pat, &mut 0, extglob, true);
+    let mut memo = BTreeSet::new();
+    match_nodes(&nodes, text, 0, text.len(), 0, &mut memo, nocase)
 }
 
 /// Does `text` contain any glob metacharacter?
 pub fn has_glob_chars(s: &str) -> bool {
-    s.bytes().any(|b| matches!(b, b'*' | b'?' | b'['))
+    has_glob_chars_ext(s, false)
+}
+
+/// `has_glob_chars` with extglob openers taken into account.
+pub fn has_glob_chars_ext(s: &str, extglob: bool) -> bool {
+    let b = s.as_bytes();
+    for i in 0..b.len() {
+        match b[i] {
+            b'*' | b'?' | b'[' => return true,
+            b'(' if extglob && i > 0 && matches!(b[i - 1], b'?' | b'*' | b'+' | b'@' | b'!') => {
+                return true;
+            }
+            _ => {}
+        }
+    }
+    false
 }
 
 /// Expand a glob pattern against the filesystem.
@@ -112,7 +271,7 @@ pub fn has_glob_chars(s: &str) -> bool {
 /// starts with one (or `dotglob` is set). Results are sorted (bash sorts
 /// lexicographically). Returns an empty `Vec` when nothing matches (the
 /// caller keeps the literal pattern).
-pub fn expand_glob(pattern: &str, dotglob: bool, nocaseglob: bool) -> Vec<String> {
+pub fn expand_glob(pattern: &str, dotglob: bool, nocaseglob: bool, extglob: bool) -> Vec<String> {
     let p = cake_platform::get();
     let abs = pattern.starts_with('/');
     let parts: Vec<&str> = pattern
@@ -152,12 +311,12 @@ pub fn expand_glob(pattern: &str, dotglob: bool, nocaseglob: bool) -> Vec<String
                 s.push_str(name);
                 s
             };
-            if has_glob_chars(part) {
+            if has_glob_chars_ext(part, extglob) {
                 for name in &entries {
                     if !dotglob && name.starts_with('.') && !part.starts_with('.') {
                         continue;
                     }
-                    if glob_match(part, name) || (nocaseglob && glob_match_case(part, name)) {
+                    if glob_match_ext(part, name, nocaseglob, extglob) {
                         next.push(join(name));
                     }
                 }
@@ -182,4 +341,39 @@ pub fn expand_glob(pattern: &str, dotglob: bool, nocaseglob: bool) -> Vec<String
     }
     results.sort();
     results
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extglob_off_is_literal() {
+        assert!(!glob_match("?(foo|bar).txt", "bar.txt"));
+        assert!(!glob_match("?(foo|bar).txt", "foo.txt"));
+        assert!(glob_match("?(foo|bar).txt", "?(foo|bar).txt"));
+    }
+
+    #[test]
+    fn extglob_groups() {
+        let m = |pat: &str, s: &str| glob_match_ext(pat, s, false, true);
+        assert!(m("@(foo|bar)", "foo"));
+        assert!(m("@(foo|bar)", "bar"));
+        assert!(!m("@(foo|bar)", "baz"));
+        assert!(m("?(foo|bar)", ""));
+        assert!(m("?(foo|bar)", "foo"));
+        assert!(m("*(foo)", ""));
+        assert!(m("*(foo)", "foofoofoo"));
+        assert!(!m("*(foo)", "foob"));
+        assert!(m("+(foo)", "foo"));
+        assert!(!m("+(foo)", ""));
+        assert!(m("!(foo)", "bar"));
+        assert!(!m("!(foo)", "foo"));
+        assert!(m("!(foo)", ""));
+        assert!(m("+(foo|bar).txt", "barfoo.txt"));
+        assert!(m("!(b)*", "foo.txt"));
+        // `!(b)` can match any prefix that is not exactly `b` (bash).
+        assert!(m("!(b)*", "bar.txt"));
+        assert!(!m("!(b)", "b"));
+    }
 }

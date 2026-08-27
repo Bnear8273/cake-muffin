@@ -182,8 +182,11 @@ impl<'a> CondParser<'a> {
         let rhs = self.expand_word()?;
 
         match op.as_str() {
-            "=" | "==" => Ok(lhs == rhs),
-            "!=" => Ok(lhs != rhs),
+            // `[[ x == pat ]]` pattern-matches (extglob always active, bash).
+            "=" | "==" => {
+                Ok(crate::glob::glob_match_ext(&rhs, &lhs, false, true))
+            }
+            "!=" => Ok(!crate::glob::glob_match_ext(&rhs, &lhs, false, true)),
             "<" => Ok(lhs < rhs),
             ">" => Ok(lhs > rhs),
             "-eq" => Ok(parse_num(&lhs) == parse_num(&rhs)),
@@ -259,6 +262,29 @@ fn tokenize_cond(text: &str) -> Vec<String> {
             tok.push(c);
             tok.push('=');
             tokens.push(tok);
+            continue;
+        }
+        // `!(` at the start of a word is an extglob opener, not `!`.
+        if c == '!' && chars.peek() == Some(&'(') {
+            cur.push(c);
+            continue;
+        }
+        // Extglob group `?(...)` `*(...)` `+(...)` `@(...)` `!(...)` stays
+        // one token.
+        if c == '(' && matches!(cur.chars().last(), Some('?') | Some('*') | Some('+') | Some('@') | Some('!')) {
+            let mut depth = 1;
+            cur.push(c);
+            for ch in chars.by_ref() {
+                cur.push(ch);
+                if ch == '(' {
+                    depth += 1;
+                } else if ch == ')' {
+                    depth -= 1;
+                    if depth == 0 {
+                        break;
+                    }
+                }
+            }
             continue;
         }
         if matches!(c, '(' | ')' | '!') {

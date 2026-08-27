@@ -50,6 +50,13 @@ pub struct ExpandCtx<'a> {
     pub proc_subst_fds: &'a mut Vec<cake_platform::Fd>,
 }
 
+impl ExpandCtx<'_> {
+    pub fn report_error(&self, msg: &str) {
+        let _ = cake_platform::get().write(2, msg.as_bytes());
+        let _ = cake_platform::get().write(2, b"\n");
+    }
+}
+
 /// The characters that make up IFS by default when IFS is unset.
 const DEFAULT_IFS: &str = " \t\n";
 
@@ -101,7 +108,7 @@ fn expand_fields(
         match expand_part(ctx, part, in_dquotes)? {
             PartOut::Append(s) => {
                 cur.push_str(&s);
-                if eligible && crate::glob::has_glob_chars(&s) {
+                if eligible && crate::glob::has_glob_chars_ext(&s, ctx.shopt.extglob) {
                     cur_glob = true;
                 }
                 if quoted && s.is_empty() {
@@ -148,8 +155,9 @@ fn expand_fields(
     // unless `nullglob` removes the field entirely.
     let mut out = Vec::new();
     for (i, f) in fields.iter().enumerate() {
-        if glob_ok[i] && crate::glob::has_glob_chars(f) {
-            let matches = crate::glob::expand_glob(f, ctx.shopt.dotglob, ctx.shopt.nocaseglob);
+        if glob_ok[i] && crate::glob::has_glob_chars_ext(f, ctx.shopt.extglob) {
+            let matches =
+                crate::glob::expand_glob(f, ctx.shopt.dotglob, ctx.shopt.nocaseglob, ctx.shopt.extglob);
             if !matches.is_empty() {
                 out.extend(matches);
                 continue;
@@ -446,6 +454,25 @@ fn expand_process_subst(ctx: &mut ExpandCtx, raw: &str) -> Result<PartOut, Strin
 /// Evaluate `cmd` in a forked child with stdout captured, then strip all
 /// trailing newlines (bash semantics).
 fn expand_command_subst(ctx: &mut ExpandCtx, cmd: &str, in_dquotes: bool) -> Result<PartOut, String> {
+    // `$(<file)` — read a file instead of running a sub-shell (bash).
+    if let Some(rest) = cmd.trim_start().strip_prefix('<') {
+        let path_text = rest.trim_start();
+        if !path_text.is_empty() {
+            let path = expand_operand(ctx, path_text)?;
+            return match crate::builtins::read_file(&path) {
+                Ok(content) => {
+                    let trimmed = content.trim_end_matches('\n').to_owned();
+                    Ok(part_value(&Some(trimmed), in_dquotes))
+                }
+                Err(e) => {
+                    // Report like a failed command substitution (bash
+                    // prints the open error and expands to nothing).
+                    ctx.report_error(&alloc::format!("cake: {path}: {e}"));
+                    Ok(PartOut::Nothing)
+                }
+            };
+        }
+    }
     let p = cake_platform::get();
     let (r, w) = p
         .pipe(false)

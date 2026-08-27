@@ -21,7 +21,7 @@ use crate::arith::eval_arith;
 use crate::builtins;
 use crate::cond::eval_cond;
 use crate::expand::{expand_word, expand_word_quoted, ExpandCtx};
-use crate::glob::glob_match;
+use crate::glob::glob_match_ext;
 use crate::redirect::{setup_redirects, CommandFds};
 use crate::resolve::{resolve_command, CommandSpec};
 
@@ -144,6 +144,7 @@ pub enum TrapTrigger {
     Signal(cake_platform::Signal),
     Exit,
     Err,
+    Debug,
 }
 
 /// Shell options toggled by `shopt`.
@@ -155,6 +156,8 @@ pub struct ShoptBits {
     pub dotglob: bool,
     /// `nocaseglob`: glob matching ignores case.
     pub nocaseglob: bool,
+    /// `extglob`: extended glob patterns `?(...)` `*(...)` `+(...)` `@(...)` `!(...)`.
+    pub extglob: bool,
 }
 
 /// The shell evaluator.
@@ -199,6 +202,9 @@ pub struct Executor {
     pub(crate) cmd_lineno: u32,
     /// Fds kept open for `<(cmd)`/`>(cmd)` process substitutions.
     pub(crate) proc_subst: Vec<cake_platform::Fd>,
+    /// Inside a forked sub-shell: inherited DEBUG traps are suppressed
+    /// (bash only runs traps registered inside the sub-shell).
+    pub(crate) in_subshell: bool,
     /// Commands that were not found (persisted by the driver).
     pub blacklist: CommandBlacklist,
     /// `set -e`: exit on a failing simple command (outside exempt contexts).
@@ -209,6 +215,10 @@ pub struct Executor {
     pub noglob: bool,
     /// `set -o pipefail`: a pipeline's status is the last non-zero element.
     pub pipefail: bool,
+    /// `set -E`: ERR traps propagate into functions.
+    pub errtrace: bool,
+    /// `set -T`: DEBUG traps propagate into functions.
+    pub functrace: bool,
     /// `shopt` toggles.
     pub shopt: ShoptBits,
     /// `trap` entries in the order registered.
@@ -246,11 +256,14 @@ impl Executor {
             start_time: cake_platform::try_get().map(|p| p.time_seconds()).unwrap_or(0),
             cmd_lineno: 1,
             proc_subst: Vec::new(),
+            in_subshell: false,
             blacklist: CommandBlacklist::new(),
             errexit: false,
             nounset: false,
             noglob: false,
             pipefail: false,
+            errtrace: false,
+            functrace: false,
             shopt: ShoptBits::default(),
             traps: Vec::new(),
             errexit_suppress: 0,
@@ -382,16 +395,32 @@ impl Executor {
     /// unless it is negated (`!`) or inside an exempt context (`errexit_suppress`).
     fn eval_pipeline_checked(&mut self, pipeline: &Pipeline) -> ProcStatus {
         let status = self.eval_pipeline(pipeline);
-        self.maybe_fire_errexit(&status, pipeline.negated);
+        let last_simple = matches!(
+            pipeline.commands.last().map(|c| &c.kind),
+            Some(CommandKind::Simple(_)) | Some(CommandKind::Empty)
+        );
+        self.maybe_fire_errexit(&status, pipeline.negated, last_simple);
         status
     }
 
     /// `set -e` trigger point (and `trap ERR` hook).
-    fn maybe_fire_errexit(&mut self, status: &ProcStatus, negated: bool) {
+    ///
+    /// `errexit` fires for any failing command; the ERR trap fires only when
+    /// the failing command is a simple command (bash: a failing `if`/`for`/
+    /// subshell does not run the ERR trap).
+    fn maybe_fire_errexit(&mut self, status: &ProcStatus, negated: bool, last_simple: bool) {
+        if self.errexit_pending.is_some() {
+            return;
+        }
         if self.errexit && !negated && self.errexit_suppress == 0 && !status.success() {
             self.errexit_pending = Some(status.status_code());
         }
-        if !negated && self.errexit_suppress == 0 && !status.success() {
+        if last_simple
+            && !negated
+            && self.errexit_suppress == 0
+            && !status.success()
+            && (self.fn_depth == 0 || self.errtrace)
+        {
             self.run_trap(TrapTrigger::Err);
         }
     }
@@ -772,6 +801,7 @@ impl Executor {
                         .filter(|(t, _)| *t == TrapTrigger::Exit)
                         .map(|(_, c)| c.clone())
                         .collect();
+                    exec.in_subshell = true;
                     let st = exec
                         .apply_fds_in_parent(&fds, |e| e.eval_list(&body))
                         .status_code();
@@ -784,6 +814,9 @@ impl Executor {
                 }
             }
             CommandKind::Function(fn_cmd) => {
+                if self.functrace {
+                    self.run_trap(TrapTrigger::Debug);
+                }
                 self.functions.insert(fn_cmd.name.clone(), (*fn_cmd.body).clone());
                 Ok(EvalResult::Done(ProcStatus::Exit(0)))
             }
@@ -799,6 +832,11 @@ impl Executor {
     }
 
     fn eval_simple(&mut self, sc: &SimpleCommand, fds: &mut CommandFds) -> Result<EvalResult, String> {
+        // `trap ... DEBUG` fires before every simple command (not inside
+        // functions unless `set -T`).
+        if (self.fn_depth == 0 || self.functrace) && !self.in_subshell {
+            self.run_trap(TrapTrigger::Debug);
+        }
         // Prefix assignments. Arrays and indexed assignments always take
         // effect in the current shell; scalar assignments are temporary when
         // followed by a command.
@@ -1089,7 +1127,7 @@ impl Executor {
                     // no pathname expansion (`*` stays a pattern).
                     expand_word_quoted(&mut ctx, pat).unwrap_or_default()
                 };
-                if glob_match(&pat_str, &word) {
+                if glob_match_ext(&pat_str, &word, false, self.shopt.extglob) {
                     return self.eval_list(&arm.body);
                 }
             }
