@@ -39,6 +39,17 @@ pub fn unix_backend() -> &'static dyn Platform {
     &BACKEND
 }
 
+/// Signals received since the last drain, one bit per raw signal number.
+/// Set only from signal handlers (async context), so only atomic ops.
+static RECEIVED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Generic handler: record the signal number in [`RECEIVED`].
+extern "C" fn record_signal(sig: i32) {
+    if (0..64).contains(&sig) {
+        RECEIVED.fetch_or(1u64 << sig, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
 /// Apply raw-mode flags to a `libc::termios` stored in the opaque buffer.
 fn termios_raw_fn(data: &mut [u8; 64]) {
     let t = data.as_mut_ptr() as *mut libc::termios;
@@ -198,6 +209,10 @@ impl Platform for UnixPlatform {
         }
     }
 
+    fn install_trap_handler(&self, sig: Signal) -> Result<(), PlatformError> {
+        self.install_signal_handler(sig, record_signal)
+    }
+
     fn block_signals(&self, sigs: &[Signal]) -> Result<SignalMask, PlatformError> {
         let mut set: libc::sigset_t = unsafe { core::mem::zeroed() };
         unsafe {
@@ -233,6 +248,25 @@ impl Platform for UnixPlatform {
             return Err(PlatformError::Io("pthread_sigmask failed".into()));
         }
         Ok(())
+    }
+
+    fn drain_received_signals(&self) -> Vec<Signal> {
+        use std::sync::atomic::Ordering;
+        let mut out = Vec::new();
+        let bits = RECEIVED.load(Ordering::Relaxed);
+        if bits == 0 {
+            return out;
+        }
+        // Atomically claim the bits so the same signal is not re-delivered.
+        let claimed = RECEIVED.fetch_and(0, Ordering::AcqRel) & bits;
+        let mut n = 0;
+        while (1u64 << n) <= claimed {
+            if claimed & (1u64 << n) != 0 {
+                out.push(self.signal_from_number(n));
+            }
+            n += 1;
+        }
+        out
     }
 
     // --- Terminal --------------------------------------------------------

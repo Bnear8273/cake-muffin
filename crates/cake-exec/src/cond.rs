@@ -17,6 +17,10 @@ pub fn eval_cond(exec: &mut Executor, text: &str) -> ProcStatus {
             functions: &exec.functions,
             aliases: &exec.aliases,
             shell_pid: exec.shell_pid,
+            nounset: exec.nounset,
+            errexit: exec.errexit,
+            noglob: exec.noglob,
+            shopt: exec.shopt,
         };
         let mut p = CondParser::new(text, ctx);
         p.parse_expr()

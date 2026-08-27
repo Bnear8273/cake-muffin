@@ -8,7 +8,7 @@ use alloc::vec::Vec;
 use cake_env::{EnvVar, EnvVarFlags};
 use cake_proc::ProcStatus;
 
-use crate::executor::Executor;
+use crate::executor::{Executor, TrapTrigger};
 
 /// Run `name` with `args` (args[0] == name). Returns `None` if `name` is not
 /// a builtin.
@@ -37,6 +37,9 @@ pub fn run_builtin(exec: &mut Executor, name: &str, args: &[String]) -> Option<R
         "source" => source(exec, args),
         "." => source(exec, args),
         "read" => read(exec, args),
+        "set" => set_(exec, args),
+        "shopt" => shopt(exec, args),
+        "trap" => trap(exec, args),
         _ => return None,
     })
 }
@@ -852,12 +855,300 @@ fn is_identifier(s: &str) -> bool {
     chars.all(|c| c == '_' || c.is_ascii_alphanumeric())
 }
 
+// --- set ---
+
+/// `set [-euf] [+euf] [-o opt] [+o opt] [--] [arg...]` and bare `set`.
+fn set_(exec: &mut Executor, args: &[String]) -> Result<ProcStatus, String> {
+    let mut i = 1;
+    if i >= args.len() {
+        // Bare `set`: print all shell variables, sorted, `name=value`.
+        let mut names = exec.env.get_names();
+        names.sort_unstable();
+        for n in names {
+            let mut line = alloc::string::String::new();
+            line.push_str(n);
+            line.push('=');
+            line.push_str(exec.env.get(n).map(|v| v.value()).unwrap_or(""));
+            line.push('\n');
+            out(&line);
+        }
+        return Ok(ProcStatus::Exit(0));
+    }
+    let mut rest: Vec<String> = Vec::new();
+    let mut options_seen = false;
+    while i < args.len() {
+        let a = args[i].as_str();
+        let (off, body) = if let Some(b) = a.strip_prefix("+") {
+            (true, b)
+        } else if let Some(b) = a.strip_prefix("-") {
+            (false, b)
+        } else {
+            break;
+        };
+        if body == "-" {
+            i += 1;
+            break;
+        }
+        options_seen = true;
+        if body == "o" || body == "O" {
+            if i + 1 >= args.len() {
+                list_set_options(exec);
+                return Ok(ProcStatus::Exit(0));
+            }
+            let name = args[i + 1].clone();
+            let value = !off;
+            match name.as_str() {
+                "errexit" => exec.errexit = value,
+                "nounset" => exec.nounset = value,
+                "noglob" => exec.noglob = value,
+                "pipefail" => exec.pipefail = value,
+                other => {
+                    return Err(alloc::format!(
+                        "cake: set: -o: invalid option name `{other}`"
+                    ))
+                }
+            }
+            i += 2;
+            continue;
+        }
+        for c in body.chars() {
+            match c {
+                'e' => exec.errexit = !off,
+                'u' => exec.nounset = !off,
+                'f' => exec.noglob = !off,
+                'v' | 'x' | 'n' | 'C' | 'm' | 'a' | 'b' => {
+                    // Accepted for compatibility; not yet implemented.
+                }
+                other => {
+                    return Err(alloc::format!(
+                        "cake: set: invalid option `-{other}`"
+                    ))
+                }
+            }
+        }
+        i += 1;
+    }
+    if options_seen {
+        rest.extend(args[i..].iter().cloned());
+        if !rest.is_empty() {
+            exec.positional = rest;
+        }
+        return Ok(ProcStatus::Exit(0));
+    }
+    // `set arg...` (no option letters): positional parameters.
+    let mut new_pos = vec![exec.positional[0].clone()];
+    new_pos.extend(args[1..].iter().cloned());
+    exec.positional = new_pos;
+    Ok(ProcStatus::Exit(0))
+}
+
+fn list_set_options(exec: &Executor) {
+    let opts = [
+        ("errexit", exec.errexit),
+        ("noglob", exec.noglob),
+        ("nounset", exec.nounset),
+        ("pipefail", exec.pipefail),
+    ];
+    let mut buf = alloc::string::String::new();
+    for (name, on) in opts {
+        buf.push_str(&alloc::format!("{name:<16} {}\n", if on { "on" } else { "off" }));
+    }
+    out(&buf);
+}
+
+// --- shopt ---
+
+/// `shopt [-s|-u|-q|-p] [name ...]`.
+fn shopt(exec: &mut Executor, args: &[String]) -> Result<ProcStatus, String> {
+    let mut set = false;
+    let mut unset = false;
+    let mut query = false;
+    let mut print = false;
+    let mut i = 1;
+    while i < args.len() {
+        match args[i].as_str() {
+            "-s" => set = true,
+            "-u" => unset = true,
+            "-q" => query = true,
+            "-p" => print = true,
+            "-o" => {
+                // `shopt -o` falls back to `set -o`; ignore for now.
+            }
+            "-O" | "-E" | "-S" => {}
+            other if other.starts_with('-') => {
+                return Err(alloc::format!("cake: shopt: invalid option `{other}`"))
+            }
+            _ => break,
+        }
+        i += 1;
+    }
+    let names: Vec<&str> = args[i..].iter().map(|s| s.as_str()).collect();
+    if set || unset {
+        for name in &names {
+            let Some(slot) = shopt_slot_mut(exec, name) else {
+                return Err(alloc::format!("cake: shopt: no such option `{name}`"));
+            };
+            *slot = set;
+        }
+        return Ok(ProcStatus::Exit(0));
+    }
+    if query {
+        let all = names.iter().all(|n| shopt_slot(exec, n).unwrap_or(false));
+        return Ok(ProcStatus::Exit(if all { 0 } else { 1 }));
+    }
+    // Print mode: no args → all options; with names → those options.
+    let list: Vec<&str> = if names.is_empty() {
+        vec!["nullglob", "dotglob", "nocaseglob"]
+    } else {
+        names
+    };
+    let mut buf = alloc::string::String::new();
+    for name in list {
+        if print {
+            buf.push_str(&alloc::format!(
+                "shopt {0}{1} {2}\n",
+                if shopt_slot(exec, name).unwrap_or(false) { "-s" } else { "-u" },
+                " ",
+                name
+            ));
+        } else {
+            buf.push_str(&alloc::format!(
+                "{name:<12} {}\n",
+                if shopt_slot(exec, name).unwrap_or(false) { "on" } else { "off" }
+            ));
+        }
+    }
+    out(&buf);
+    Ok(ProcStatus::Exit(0))
+}
+
+fn shopt_slot(exec: &Executor, name: &str) -> Option<bool> {
+    Some(match name {
+        "nullglob" => exec.shopt.nullglob,
+        "dotglob" => exec.shopt.dotglob,
+        "nocaseglob" => exec.shopt.nocaseglob,
+        _ => return None,
+    })
+}
+
+fn shopt_slot_mut<'a>(exec: &'a mut Executor, name: &str) -> Option<&'a mut bool> {
+    Some(match name {
+        "nullglob" => &mut exec.shopt.nullglob,
+        "dotglob" => &mut exec.shopt.dotglob,
+        "nocaseglob" => &mut exec.shopt.nocaseglob,
+        _ => return None,
+    })
+}
+
+// --- trap ---
+
+/// `trap [-p] [[action] signal ...]`.
+fn trap(exec: &mut Executor, args: &[String]) -> Result<ProcStatus, String> {
+    let mut i = 1;
+    let mut print = false;
+    if i < args.len() && args[i] == "-p" {
+        print = true;
+        i += 1;
+    }
+    if i >= args.len() {
+        // `trap` / `trap -p` with no signals: print all registered traps.
+        print = true;
+    }
+    if print {
+        let mut buf = alloc::string::String::new();
+        for (trigger, cmd) in &exec.traps {
+            buf.push_str(&alloc::format!("trap -- '{}' {}\n", cmd, trigger_name(*trigger)));
+        }
+        out(&buf);
+        return Ok(ProcStatus::Exit(0));
+    }
+    let action = args[i].clone();
+    i += 1;
+    if i >= args.len() {
+        return Err("cake: trap: usage: trap [-lp] [[action] signal ...]".into());
+    }
+    let mut any = false;
+    for name in &args[i..] {
+        let Some(trigger) = parse_trigger(name) else {
+            return Err(alloc::format!("cake: trap: invalid signal spec `{name}`"));
+        };
+        exec.traps.retain(|(t, _)| *t != trigger);
+        if action != "-" {
+            exec.traps.push((trigger, action.clone()));
+            if let TrapTrigger::Signal(sig) = trigger {
+                // Record the signal so the trap can fire at the next
+                // evaluation boundary. (`trap -` leaves the recording
+                // handler installed; the signal is then just ignored.)
+                let _ = cake_platform::get().install_trap_handler(sig);
+            }
+        }
+        any = true;
+    }
+    if !any {
+        return Err("cake: trap: usage: trap [-lp] [[action] signal ...]".into());
+    }
+    Ok(ProcStatus::Exit(0))
+}
+
+fn parse_trigger(name: &str) -> Option<TrapTrigger> {
+    use cake_platform::Signal;
+    let sig = match name {
+        "EXIT" | "0" => return Some(TrapTrigger::Exit),
+        "ERR" => return Some(TrapTrigger::Err),
+        "DEBUG" => return None,
+        "HUP" => Signal::Other(1),
+        "INT" => Signal::Interrupt,
+        "QUIT" => Signal::Quit,
+        "TERM" => Signal::Terminate,
+        "KILL" => Signal::Other(9),
+        "USR1" => Signal::User1,
+        "USR2" => Signal::User2,
+        "PIPE" => Signal::Other(13),
+        "ALRM" => Signal::Other(14),
+        "CHLD" => Signal::Child,
+        "CONT" => Signal::Continue,
+        "STOP" => Signal::Other(19),
+        "TSTP" => Signal::Tstp,
+        "WINCH" => Signal::WindowChange,
+        "ILL" => Signal::Other(4),
+        "ABRT" => Signal::Other(6),
+        "BUS" => Signal::Other(7),
+        "FPE" => Signal::Other(8),
+        "SEGV" => Signal::Other(11),
+        "TTIN" => Signal::Other(21),
+        "TTOU" => Signal::Other(22),
+        _ => return name.parse::<i32>().ok().filter(|n| *n > 0).map(|n| TrapTrigger::Signal(Signal::Other(n))),
+    };
+    Some(TrapTrigger::Signal(sig))
+}
+
+fn trigger_name(trigger: TrapTrigger) -> alloc::string::String {
+    use cake_platform::Signal;
+    match trigger {
+        TrapTrigger::Exit => "EXIT".into(),
+        TrapTrigger::Err => "ERR".into(),
+        TrapTrigger::Signal(s) => match s {
+            Signal::Interrupt => "INT".into(),
+            Signal::Quit => "QUIT".into(),
+            Signal::Terminate => "TERM".into(),
+            Signal::Child => "CHLD".into(),
+            Signal::Continue => "CONT".into(),
+            Signal::Tstp => "TSTP".into(),
+            Signal::WindowChange => "WINCH".into(),
+            Signal::User1 => "USR1".into(),
+            Signal::User2 => "USR2".into(),
+            Signal::Other(n) => n.to_string(),
+        },
+    }
+}
+
 pub fn is_builtin(name: &str) -> bool {
     matches!(
         name,
         "echo" | "printf" | "true" | ":" | "false" | "exit" | "cd" | "pwd" | "type"
             | "export" | "unset" | "readonly" | "shift" | "command" | "alias" | "unalias"
             | "test" | "[" | "break" | "continue" | "return" | "source" | "." | "read"
+            | "set" | "shopt" | "trap"
     )
 }
 
@@ -866,14 +1157,13 @@ pub fn builtin_names() -> &'static [&'static str] {
     &[
         "echo", "printf", "true", ":", "false", "exit", "cd", "pwd", "type", "export",
         "unset", "readonly", "shift", "command", "alias", "unalias", "test", "[", "break",
-        "continue", "return", "source", ".", "read",
+        "continue", "return", "source", ".", "read", "set", "shopt", "trap",
     ]
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::executor::Executor;
     use alloc::string::ToString;
     use alloc::vec::Vec;
     use cake_env::EnvStack;

@@ -27,6 +27,14 @@ pub struct ExpandCtx<'a> {
     pub aliases: &'a BTreeMap<String, String>,
     /// The shell's own pid for `$$`.
     pub shell_pid: i32,
+    /// `set -u`: an unset variable is an error.
+    pub nounset: bool,
+    /// `set -f`: skip globbing.
+    pub noglob: bool,
+    /// `shopt` toggles for globbing.
+    pub shopt: crate::executor::ShoptBits,
+    /// `set -e`: propagate to command-substitution sub-shells.
+    pub errexit: bool,
 }
 
 /// The characters that make up IFS by default when IFS is unset.
@@ -119,17 +127,21 @@ fn expand_fields(
         glob_ok.push(core::mem::take(&mut cur_glob));
     }
 
-    if in_dquotes || !do_glob {
+    if in_dquotes || !do_glob || ctx.noglob {
         return Ok(fields);
     }
     // Pathname expansion: each unquoted field containing glob metachars is
-    // matched against the filesystem. No match → the literal pattern stays.
+    // matched against the filesystem. No match → the literal pattern stays,
+    // unless `nullglob` removes the field entirely.
     let mut out = Vec::new();
     for (i, f) in fields.iter().enumerate() {
         if glob_ok[i] && crate::glob::has_glob_chars(f) {
-            let matches = crate::glob::expand_glob(f);
+            let matches = crate::glob::expand_glob(f, ctx.shopt.dotglob, ctx.shopt.nocaseglob);
             if !matches.is_empty() {
                 out.extend(matches);
+                continue;
+            }
+            if ctx.shopt.nullglob {
                 continue;
             }
         }
@@ -369,6 +381,10 @@ fn expand_command_subst(ctx: &mut ExpandCtx, cmd: &str, in_dquotes: bool) -> Res
     let mut positional = Some(ctx.positional.to_vec());
     let mut functions = Some(ctx.functions.clone());
     let mut aliases = Some(ctx.aliases.clone());
+    let nounset = ctx.nounset;
+    let noglob = ctx.noglob;
+    let shopt = ctx.shopt;
+    let errexit = ctx.errexit;
     let handle = p.run_in_child(&mut move || {
         let _ = p.dup2(w, 1);
         let _ = p.close(r);
@@ -376,6 +392,10 @@ fn expand_command_subst(ctx: &mut ExpandCtx, cmd: &str, in_dquotes: bool) -> Res
         sub.positional = positional.take().unwrap_or_default();
         sub.functions = functions.take().unwrap_or_default();
         sub.aliases = aliases.take().unwrap_or_default();
+        sub.nounset = nounset;
+        sub.noglob = noglob;
+        sub.shopt = shopt;
+        sub.errexit = errexit;
         let outcome = sub.eval_str(cmd);
         outcome.status.status_code()
     });
@@ -464,7 +484,12 @@ fn expand_parameter(ctx: &mut ExpandCtx, p: &Parameter, in_dquotes: bool) -> Res
         return Ok(match params.get(idx.saturating_sub(1)) {
             Some(v) if in_dquotes => PartOut::Append(v.clone()),
             Some(v) => PartOut::Split(v.clone()),
-            None => PartOut::Nothing,
+            None => {
+                if ctx.nounset {
+                    return Err(alloc::format!("cake: ${name}: unbound variable"));
+                }
+                PartOut::Nothing
+            }
         });
     }
 
@@ -478,7 +503,12 @@ fn expand_parameter(ctx: &mut ExpandCtx, p: &Parameter, in_dquotes: bool) -> Res
                 PartOut::Split(value)
             })
         }
-        None => Ok(PartOut::Nothing),
+        None => {
+            if ctx.nounset {
+                return Err(alloc::format!("cake: ${name}: unbound variable"));
+            }
+            Ok(PartOut::Nothing)
+        }
     }
 }
 
@@ -682,7 +712,12 @@ fn expand_indexed(ctx: &mut ExpandCtx, name: &str, idx: &str, in_dquotes: bool) 
         } else {
             PartOut::Split(v.clone())
         }),
-        None => Ok(PartOut::Nothing),
+        None => {
+            if ctx.nounset {
+                return Err(alloc::format!("cake: {name}[{idx}]: unbound variable"));
+            }
+            Ok(PartOut::Nothing)
+        }
     }
 }
 
@@ -705,6 +740,9 @@ fn apply_param_op(ctx: &mut ExpandCtx, name: &str, index: Option<String>, op: Pa
             if matches!(index.as_deref(), Some("@") | Some("*")) {
                 Ok(PartOut::Append(array_values(ctx, name).len().to_string()))
             } else {
+                if value.is_none() && ctx.nounset {
+                    return Err(alloc::format!("cake: ${name}: unbound variable"));
+                }
                 let len = value.as_ref().map(|v| v.chars().count()).unwrap_or(0);
                 Ok(PartOut::Append(len.to_string()))
             }
@@ -1117,6 +1155,10 @@ mod tests {
             functions: &BTreeMap::new(),
             aliases: &BTreeMap::new(),
             shell_pid: 123,
+            nounset: false,
+            errexit: false,
+            noglob: false,
+            shopt: crate::executor::ShoptBits::default(),
         };
         expand_word(&mut ctx, &word).unwrap()
     }

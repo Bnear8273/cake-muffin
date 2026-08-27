@@ -19,6 +19,7 @@ pub struct MockPlatform {
     cwd: Mutex<String>,
     env: Mutex<Vec<(String, String)>>,
     xdg: Mutex<String>,
+    pending_signals: Mutex<Vec<Signal>>,
 }
 
 impl Default for MockPlatform {
@@ -35,7 +36,13 @@ impl MockPlatform {
             cwd: Mutex::new("/tmp".into()),
             env: Mutex::new(Vec::new()),
             xdg: Mutex::new("/tmp/.local/share".into()),
+            pending_signals: Mutex::new(Vec::new()),
         }
+    }
+
+    /// Simulate a signal arriving (e.g. `kill -TERM $$` inside a test).
+    pub fn deliver_signal(&self, sig: Signal) {
+        self.pending_signals.lock().unwrap().push(sig);
     }
 
     fn spawns(&self) -> MutexGuard<'_, Vec<SpawnConfig>> {
@@ -106,6 +113,10 @@ impl Platform for MockPlatform {
         Ok(())
     }
 
+    fn install_trap_handler(&self, _sig: Signal) -> Result<(), PlatformError> {
+        Ok(())
+    }
+
     fn signal_number(&self, sig: Signal) -> i32 {
         // Return a stable test value regardless of host platform.
         match sig {
@@ -143,6 +154,12 @@ impl Platform for MockPlatform {
 
     fn unblock_signals(&self, _mask: &SignalMask) -> Result<(), PlatformError> {
         Err(PlatformError::Unsupported)
+    }
+
+    fn drain_received_signals(&self) -> Vec<Signal> {
+        // Tests can inject signals with `MockPlatform::deliver_signal`.
+        let mut pending = self.pending_signals.lock().unwrap();
+        core::mem::take(&mut *pending)
     }
 
     fn get_termios(&self, _fd: Fd) -> Result<Termios, PlatformError> {

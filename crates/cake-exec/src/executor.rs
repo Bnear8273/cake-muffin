@@ -49,6 +49,25 @@ pub(crate) struct LoopControl {
     pub(crate) depth: u32,
 }
 
+/// What a `trap` entry reacts to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrapTrigger {
+    Signal(cake_platform::Signal),
+    Exit,
+    Err,
+}
+
+/// Shell options toggled by `shopt`.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ShoptBits {
+    /// `nullglob`: unmatched glob patterns expand to nothing.
+    pub nullglob: bool,
+    /// `dotglob`: glob patterns match hidden files.
+    pub dotglob: bool,
+    /// `nocaseglob`: glob matching ignores case.
+    pub nocaseglob: bool,
+}
+
 /// The shell evaluator.
 #[derive(Debug)]
 pub struct Executor {
@@ -79,6 +98,24 @@ pub struct Executor {
     background: Vec<ProcessHandle>,
     /// Commands that were not found (persisted by the driver).
     pub blacklist: CommandBlacklist,
+    /// `set -e`: exit on a failing simple command (outside exempt contexts).
+    pub errexit: bool,
+    /// `set -u`: unset variable expansions are an error.
+    pub nounset: bool,
+    /// `set -f`: disable globbing.
+    pub noglob: bool,
+    /// `set -o pipefail`: a pipeline's status is the last non-zero element.
+    pub pipefail: bool,
+    /// `shopt` toggles.
+    pub shopt: ShoptBits,
+    /// `trap` entries in the order registered.
+    pub traps: Vec<(TrapTrigger, String)>,
+    /// How many enclosing contexts exempt the current command from `errexit`.
+    errexit_suppress: usize,
+    /// Set when `errexit` fired; short-circuits the rest of evaluation.
+    errexit_pending: Option<i32>,
+    /// Suppresses nested trap execution.
+    in_trap: bool,
 }
 
 impl Executor {
@@ -98,6 +135,15 @@ impl Executor {
             shell_pid: 0,
             background: Vec::new(),
             blacklist: CommandBlacklist::new(),
+            errexit: false,
+            nounset: false,
+            noglob: false,
+            pipefail: false,
+            shopt: ShoptBits::default(),
+            traps: Vec::new(),
+            errexit_suppress: 0,
+            errexit_pending: None,
+            in_trap: false,
         }
     }
 
@@ -132,11 +178,15 @@ impl Executor {
     /// reader). Leaves any `exit` request intact so the caller can observe it
     /// via [`Self::exit_requested`].
     pub fn eval_str(&mut self, src: &str) -> EvalOutcome {
+        self.run_pending_signal_traps();
         match parse(src) {
             Ok(prog) => {
                 let status = self.eval_program(&prog);
                 self.last_status = status;
-                let final_status = self.exit_requested().map(ProcStatus::Exit).unwrap_or(status);
+                // A pending `set -e` exit is reported through the status; it
+                // is cleared here so a fresh input starts clean (interactive).
+                let final_status = self.errexit_pending.take().map(ProcStatus::Exit).unwrap_or(status);
+                let final_status = self.exit_requested().map(ProcStatus::Exit).unwrap_or(final_status);
                 EvalOutcome {
                     status: final_status,
                     error: None,
@@ -163,10 +213,11 @@ impl Executor {
     fn eval_program(&mut self, prog: &Program) -> ProcStatus {
         let mut status = ProcStatus::Exit(0);
         for cc in &prog.commands {
-            if self.exit_requested.is_some() {
+            if self.exit_requested.is_some() || self.errexit_pending.is_some() {
                 break;
             }
             status = self.eval_complete(cc);
+            self.run_pending_signal_traps();
         }
         status
     }
@@ -181,7 +232,7 @@ impl Executor {
     fn eval_list(&mut self, list: &List) -> ProcStatus {
         let mut status = ProcStatus::Exit(0);
         for item in &list.items {
-            if self.exit_requested.is_some() {
+            if self.exit_requested.is_some() || self.errexit_pending.is_some() {
                 break;
             }
             status = self.eval_and_or(item);
@@ -193,12 +244,109 @@ impl Executor {
         status
     }
 
+    /// Evaluate one pipeline, then check `set -e`. A failing pipeline fires
+    /// unless it is negated (`!`) or inside an exempt context (`errexit_suppress`).
+    fn eval_pipeline_checked(&mut self, pipeline: &Pipeline) -> ProcStatus {
+        let status = self.eval_pipeline(pipeline);
+        self.maybe_fire_errexit(&status, pipeline.negated);
+        status
+    }
+
+    /// `set -e` trigger point (and `trap ERR` hook).
+    fn maybe_fire_errexit(&mut self, status: &ProcStatus, negated: bool) {
+        if self.errexit && !negated && self.errexit_suppress == 0 && !status.success() {
+            self.errexit_pending = Some(status.status_code());
+        }
+        if !negated && self.errexit_suppress == 0 && !status.success() {
+            self.run_trap(TrapTrigger::Err);
+        }
+    }
+
+    /// Run the command registered for `trigger`, if any. Nested traps are
+    /// suppressed (`in_trap`) and a pending `errexit`/`exit` survives the trap.
+    pub(crate) fn run_trap(&mut self, trigger: TrapTrigger) {
+        if self.in_trap {
+            return;
+        }
+        let cmd = self
+            .traps
+            .iter()
+            .find(|(t, _)| *t == trigger)
+            .map(|(_, c)| c.clone());
+        if let Some(cmd) = cmd {
+            self.in_trap = true;
+            let saved_errexit = self.errexit_pending.take();
+            let saved_exit = self.exit_requested.take();
+            let _ = self.eval_str(&cmd);
+            self.in_trap = false;
+            if saved_errexit.is_some() {
+                self.errexit_pending = saved_errexit;
+            }
+            if saved_exit.is_some() {
+                self.exit_requested = saved_exit;
+            }
+        }
+    }
+
+    /// Run `trap ... EXIT` handlers once (they are consumed), then drop them.
+    /// Called by the driver when the shell exits and by sub-shells/background
+    /// jobs when they finish.
+    pub fn run_exit_traps(&mut self) {
+        self.run_exit_traps_except(&[]);
+    }
+
+    /// Like [`Self::run_exit_traps`], but skips handlers already registered
+    /// before the current sub-shell started (bash: an inherited EXIT trap is
+    /// not re-run by a sub-shell).
+    pub(crate) fn run_exit_traps_except(&mut self, inherited: &[String]) {
+        let cmds: Vec<String> = self
+            .traps
+            .iter()
+            .filter(|(t, _)| *t == TrapTrigger::Exit)
+            .filter(|(_, c)| !inherited.iter().any(|i| i == c))
+            .map(|(_, c)| c.clone())
+            .collect();
+        self.traps.retain(|(t, _)| *t != TrapTrigger::Exit);
+        // A pending `exit` would short-circuit the trap commands.
+        let saved_exit = self.exit_requested.take();
+        for c in cmds {
+            if self.in_trap {
+                break;
+            }
+            self.in_trap = true;
+            let _ = self.eval_str(&c);
+            self.in_trap = false;
+        }
+        if saved_exit.is_some() {
+            self.exit_requested = saved_exit;
+        }
+    }
+
+    /// Execute traps registered for real signals that arrived since last
+    /// check. Called at evaluation boundaries.
+    pub(crate) fn run_pending_signal_traps(&mut self) {
+        for sig in cake_platform::get().drain_received_signals() {
+            self.run_trap(TrapTrigger::Signal(sig));
+        }
+    }
+
     fn eval_and_or(&mut self, aol: &AndOrList) -> ProcStatus {
-        let mut status = self.eval_pipeline(&aol.first);
-        for (op, pipeline) in &aol.rest {
+        // In a `&&`/`||` chain every pipeline except the final one is exempt
+        // from `set -e` (bash: the command following the final operator is not).
+        let final_idx = aol.rest.len();
+        let mut status = if final_idx == 0 {
+            self.eval_pipeline_checked(&aol.first)
+        } else {
+            self.errexit_suppress += 1;
+            let st = self.eval_pipeline_checked(&aol.first);
+            self.errexit_suppress -= 1;
+            st
+        };
+        for (i, (op, pipeline)) in aol.rest.iter().enumerate() {
             if self.exit_requested.is_some()
                 || self.loop_control.is_some()
                 || self.return_requested.is_some()
+                || self.errexit_pending.is_some()
             {
                 break;
             }
@@ -207,7 +355,13 @@ impl Executor {
                 AndOrOp::OrOr => !status.success(),
             };
             if need_run {
-                status = self.eval_pipeline(pipeline);
+                if i < final_idx - 1 {
+                    self.errexit_suppress += 1;
+                }
+                status = self.eval_pipeline_checked(pipeline);
+                if i < final_idx - 1 {
+                    self.errexit_suppress -= 1;
+                }
             }
         }
         self.last_status = status;
@@ -228,7 +382,15 @@ impl Executor {
         let exec = &mut *self as *mut Executor;
         let result = cake_platform::get().run_in_child(&mut move || {
             let exec = unsafe { &mut *exec };
-            exec.eval_and_or(&list).status_code()
+            let inherited: Vec<String> = exec
+                .traps
+                .iter()
+                .filter(|(t, _)| *t == TrapTrigger::Exit)
+                .map(|(_, c)| c.clone())
+                .collect();
+            let st = exec.eval_and_or(&list).status_code();
+            exec.run_exit_traps_except(&inherited);
+            st
         });
         result.ok();
         ProcStatus::Exit(0)
@@ -245,6 +407,8 @@ impl Executor {
         let mut handles: Vec<ProcessHandle> = Vec::new();
         let mut prev_read: Option<Fd> = None;
         let mut last_status = ProcStatus::Exit(1);
+        // For `set -o pipefail`: the last non-zero element status.
+        let mut pipe_status: Option<i32> = None;
 
         for (i, cmd) in pipeline.commands.iter().enumerate() {
             let is_last = i == n - 1;
@@ -287,12 +451,18 @@ impl Executor {
             match self.eval_command(cmd, &mut fds) {
                 Ok(EvalResult::Done(st)) => {
                     last_status = st;
+                    if !st.success() {
+                        pipe_status = Some(st.status_code());
+                    }
                 }
                 Ok(EvalResult::Spawned(h)) => {
                     // A spawned process: wait for its final status later. If
                     // this is the last element, its status is the pipeline's.
                     if is_last {
                         last_status = self.wait_for(&h);
+                        if !last_status.success() {
+                            pipe_status = Some(last_status.status_code());
+                        }
                     } else {
                         handles.push(h);
                     }
@@ -300,6 +470,7 @@ impl Executor {
                 Err(e) => {
                     self.report_error(&e);
                     last_status = ProcStatus::Exit(127);
+                    pipe_status = Some(127);
                 }
             }
 
@@ -318,6 +489,10 @@ impl Executor {
 
         for h in &handles {
             let _ = self.wait_for(h);
+        }
+
+        if self.pipefail && let Some(code) = pipe_status {
+            last_status = ProcStatus::Exit(code);
         }
 
         if pipeline.negated {
@@ -377,8 +552,17 @@ impl Executor {
                 let fds = fds.clone();
                 let exec = &mut *self;
                 let handle = cake_platform::get().run_in_child(&mut move || {
-                    exec.apply_fds_in_parent(&fds, |e| e.eval_list(&body))
-                        .status_code()
+                    let inherited: Vec<String> = exec
+                        .traps
+                        .iter()
+                        .filter(|(t, _)| *t == TrapTrigger::Exit)
+                        .map(|(_, c)| c.clone())
+                        .collect();
+                    let st = exec
+                        .apply_fds_in_parent(&fds, |e| e.eval_list(&body))
+                        .status_code();
+                    exec.run_exit_traps_except(&inherited);
+                    st
                 });
                 match handle {
                     Ok(h) => Ok(EvalResult::Spawned(h)),
@@ -581,7 +765,9 @@ impl Executor {
 
     fn eval_if(&mut self, ifc: &cake_syntax::IfCommand) -> ProcStatus {
         for clause in &ifc.clauses {
+            self.errexit_suppress += 1;
             let st = self.eval_and_or(&clause.cond);
+            self.errexit_suppress -= 1;
             if self.exit_requested.is_some() {
                 return st;
             }
@@ -599,7 +785,9 @@ impl Executor {
         self.loop_depth += 1;
         let mut result = ProcStatus::Exit(0);
         loop {
+            self.errexit_suppress += 1;
             let st = self.eval_and_or(&w.cond);
+            self.errexit_suppress -= 1;
             if self.exit_requested.is_some() {
                 result = st;
                 break;
@@ -705,6 +893,10 @@ impl Executor {
             functions: &self.functions,
             aliases: &self.aliases,
             shell_pid: self.shell_pid,
+            nounset: self.nounset,
+            noglob: self.noglob,
+            shopt: self.shopt,
+            errexit: self.errexit,
         }
     }
 

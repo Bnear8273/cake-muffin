@@ -11,19 +11,28 @@ use alloc::vec::Vec;
 /// with `!`/`^` negation and `a-z` ranges. `*` does not match a leading `.`
 /// (like bash's pathname expansion), matching bash's `case` behaviour too.
 pub fn glob_match(pat: &str, text: &str) -> bool {
-    match_inner(pat.as_bytes(), text.as_bytes())
+    match_inner(pat.as_bytes(), text.as_bytes(), false)
 }
 
-fn match_inner(pat: &[u8], text: &[u8]) -> bool {
+/// Case-insensitive glob match (ASCII folding), for `shopt nocaseglob`.
+pub fn glob_match_case(pat: &str, text: &str) -> bool {
+    match_inner(pat.as_bytes(), text.as_bytes(), true)
+}
+
+fn fold(b: u8) -> u8 {
+    b.to_ascii_lowercase()
+}
+
+fn match_inner(pat: &[u8], text: &[u8], nocase: bool) -> bool {
     let (mut p, mut t) = (0usize, 0usize);
     let (mut star_p, mut star_t): (Option<usize>, Option<usize>) = (None, None);
 
     while t < text.len() {
-        if p < pat.len() && (pat[p] == b'?' || pat[p] == text[t]) {
+        if p < pat.len() && (pat[p] == b'?' || pat[p] == text[t] || (nocase && fold(pat[p]) == fold(text[t]))) {
             p += 1;
             t += 1;
         } else if p < pat.len() && pat[p] == b'[' {
-            if let Some(len) = match_class(pat, p, text[t]) {
+            if let Some(len) = match_class(pat, p, text[t], nocase) {
                 p += len;
                 t += 1;
             } else if let Some(sp) = star_p {
@@ -53,7 +62,7 @@ fn match_inner(pat: &[u8], text: &[u8]) -> bool {
 
 /// If `pat[p..]` is a character class matching `c`, return its total byte
 /// length (including `[` and `]`). `\`-escaped bytes are honoured.
-fn match_class(pat: &[u8], p: usize, c: u8) -> Option<usize> {
+fn match_class(pat: &[u8], p: usize, c: u8, nocase: bool) -> Option<usize> {
     let mut i = p + 1;
     let negated = i < pat.len() && (pat[i] == b'!' || pat[i] == b'^');
     if negated {
@@ -75,12 +84,14 @@ fn match_class(pat: &[u8], p: usize, c: u8) -> Option<usize> {
         // Range a-z.
         if i + 2 < pat.len() && pat[i + 1] == b'-' && pat[i + 2] != b']' {
             let (lo, hi) = (pat[i], pat[i + 2]);
+            let c = if nocase { fold(c) } else { c };
+            let (lo, hi) = if nocase { (fold(lo), fold(hi)) } else { (lo, hi) };
             if lo <= c && c <= hi {
                 matched = true;
             }
             i += 3;
         } else {
-            if pat[i] == c {
+            if pat[i] == c || (nocase && fold(pat[i]) == fold(c)) {
                 matched = true;
             }
             i += 1;
@@ -98,9 +109,10 @@ pub fn has_glob_chars(s: &str) -> bool {
 ///
 /// Walks each path component in turn, matching entries with [`glob_match`].
 /// `*`/`?`/`[...]` do not match a leading `.` unless the pattern component
-/// starts with one. Results are sorted (bash sorts lexicographically). Returns
-/// an empty `Vec` when nothing matches (the caller keeps the literal pattern).
-pub fn expand_glob(pattern: &str) -> Vec<String> {
+/// starts with one (or `dotglob` is set). Results are sorted (bash sorts
+/// lexicographically). Returns an empty `Vec` when nothing matches (the
+/// caller keeps the literal pattern).
+pub fn expand_glob(pattern: &str, dotglob: bool, nocaseglob: bool) -> Vec<String> {
     let p = cake_platform::get();
     let abs = pattern.starts_with('/');
     let parts: Vec<&str> = pattern
@@ -142,10 +154,10 @@ pub fn expand_glob(pattern: &str) -> Vec<String> {
             };
             if has_glob_chars(part) {
                 for name in &entries {
-                    if name.starts_with('.') && !part.starts_with('.') {
+                    if !dotglob && name.starts_with('.') && !part.starts_with('.') {
                         continue;
                     }
-                    if glob_match(part, name) {
+                    if glob_match(part, name) || (nocaseglob && glob_match_case(part, name)) {
                         next.push(join(name));
                     }
                 }

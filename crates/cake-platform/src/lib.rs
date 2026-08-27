@@ -314,11 +314,19 @@ pub trait Platform: Sync {
     /// Map a raw signal number back to a symbolic signal; unknown numbers
     /// become [`Signal::Other`].
     fn signal_from_number(&self, n: i32) -> Signal;
+    /// Install the shell's recording handler for `sig` so that `trap` can
+    /// react to it at the next evaluation boundary. The handler only records
+    /// the signal number (see [`Platform::drain_received_signals`]).
+    fn install_trap_handler(&self, sig: Signal) -> Result<(), PlatformError>;
     /// Block the given signals, returning the previous mask so callers can
     /// restore it with `unblock_signals`.
     fn block_signals(&self, sigs: &[Signal]) -> Result<SignalMask, PlatformError>;
     /// Restore a previously returned signal mask.
     fn unblock_signals(&self, mask: &SignalMask) -> Result<(), PlatformError>;
+    /// Drain the signals received since the last call (used for `trap`).
+    /// Signals are recorded by the platform's handlers without doing any
+    /// shell work in signal context.
+    fn drain_received_signals(&self) -> Vec<Signal>;
 
     // --- Terminal ---
     fn get_termios(&self, fd: Fd) -> Result<Termios, PlatformError>;

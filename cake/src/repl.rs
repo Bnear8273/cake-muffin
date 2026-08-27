@@ -278,7 +278,8 @@ pub fn run_interactive() -> ! {
                 Err(ReadlineError::Eof) => {
                     if buffer.is_empty() {
                         println!();
-                        let exec = executor.borrow();
+                        let mut exec = executor.borrow_mut();
+                        exec.run_exit_traps();
                         save_blacklist(&exec);
                         std::process::exit(0);
                     }
@@ -326,7 +327,8 @@ pub fn run_interactive() -> ! {
                     };
                     if let Some(code) = code {
                         save_history(&mut editor);
-                        let exec = executor.borrow();
+                        let mut exec = executor.borrow_mut();
+                        exec.run_exit_traps();
                         save_blacklist(&exec);
                         std::process::exit(code);
                     }
@@ -357,10 +359,12 @@ fn run_piped(executor: &mut Executor) -> ! {
             eprintln!("{err}");
         }
         if let Some(code) = executor.take_exit_requested() {
+            executor.run_exit_traps();
             save_blacklist(executor);
             std::process::exit(code);
         }
     }
+    executor.run_exit_traps();
     save_blacklist(executor);
     std::process::exit(executor.last_status.status_code());
 }

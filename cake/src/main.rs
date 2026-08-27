@@ -44,6 +44,7 @@ fn main() {
                 eprintln!("{err}");
             }
             crate::repl::save_blacklist(&executor);
+            executor.run_exit_traps();
             std::process::exit(outcome.status.status_code());
         }
         ParsedArgs::Interactive => {
