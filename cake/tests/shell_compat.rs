@@ -3,7 +3,7 @@
 //!
 //! These only cover features that are implemented today. Broader coverage
 //! (including not-yet-implemented features) lives in `tests/corpus/` and is
-//! driven by `tests/differential/run.sh`.
+//! driven by the `corpus_differential` test in this directory.
 
 use std::process::{Command, Output};
 
