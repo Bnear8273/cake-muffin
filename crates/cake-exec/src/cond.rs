@@ -25,7 +25,7 @@ pub fn eval_cond(exec: &mut Executor, text: &str) -> ProcStatus {
             random_state: &mut exec.random_state,
             start_time: exec.start_time,
             lineno: exec.cmd_lineno,
-            parent_pid: cake_platform::get().parent_pid(),
+            parent_pid: cake_platform::try_get().map(|p| p.parent_pid()).unwrap_or(0),
         };
         let mut p = CondParser::new(text, ctx);
         p.parse_expr()

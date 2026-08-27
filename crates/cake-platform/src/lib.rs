@@ -413,6 +413,12 @@ pub fn get() -> &'static dyn Platform {
         .expect("cake_platform::init has not been called")
 }
 
+/// Access the global platform instance, if [`init`] has been called.
+/// Used to keep constructors safe before the driver initialises the backend.
+pub fn try_get() -> Option<&'static dyn Platform> {
+    PLATFORM.get().copied()
+}
+
 /// Run `f` with the given signals blocked, restoring the previous mask
 /// afterwards. A convenience built on `block_signals`/`unblock_signals`.
 ///

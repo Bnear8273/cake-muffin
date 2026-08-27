@@ -238,8 +238,10 @@ impl Executor {
             next_job_id: 1,
             last_bg_pid: 0,
             interactive: false,
-            random_state: cake_platform::get().time_seconds() as u32 ^ 0x9e3779b9,
-            start_time: cake_platform::get().time_seconds(),
+            random_state: cake_platform::try_get()
+                .map(|p| p.time_seconds() as u32 ^ 0x9e3779b9)
+                .unwrap_or(0x9e3779b9),
+            start_time: cake_platform::try_get().map(|p| p.time_seconds()).unwrap_or(0),
             cmd_lineno: 1,
             blacklist: CommandBlacklist::new(),
             errexit: false,
@@ -1106,7 +1108,7 @@ impl Executor {
             random_state: &mut self.random_state,
             start_time: self.start_time,
             lineno: self.cmd_lineno,
-            parent_pid: cake_platform::get().parent_pid(),
+            parent_pid: cake_platform::try_get().map(|p| p.parent_pid()).unwrap_or(0),
         }
     }
 
