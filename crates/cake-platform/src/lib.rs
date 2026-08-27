@@ -380,6 +380,10 @@ pub trait Platform: Sync {
     // --- CWD ---
     fn current_dir(&self) -> String;
     fn set_current_dir(&self, path: &str) -> Result<(), PlatformError>;
+    /// Wall-clock seconds since the Unix epoch (for `$SECONDS`/`$RANDOM`).
+    fn time_seconds(&self) -> i64;
+    /// The parent process id (for `$PPID`).
+    fn parent_pid(&self) -> i32;
 }
 
 // ---------------------------------------------------------------------------

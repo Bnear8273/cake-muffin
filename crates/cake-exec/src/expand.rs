@@ -37,6 +37,14 @@ pub struct ExpandCtx<'a> {
     pub errexit: bool,
     /// Pid of the most recent background job (`$!`).
     pub last_bg_pid: i32,
+    /// LCG state for `$RANDOM` (mutated on each expansion).
+    pub random_state: &'a mut u32,
+    /// Shell start time (epoch seconds) for `$SECONDS`.
+    pub start_time: i64,
+    /// Current line number (`$LINENO`; one-per-command approximation).
+    pub lineno: u32,
+    /// Parent process id (`$PPID`).
+    pub parent_pid: i32,
 }
 
 /// The characters that make up IFS by default when IFS is unset.
@@ -430,6 +438,12 @@ fn expand_command_subst(ctx: &mut ExpandCtx, cmd: &str, in_dquotes: bool) -> Res
     })
 }
 
+/// `$RANDOM`: LCG (numerical recipes), 15-bit like bash.
+fn next_random(state: &mut u32) -> u32 {
+    *state = state.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+    (*state >> 16) & 0x7fff
+}
+
 /// Expand `$name` / `${...}`.
 fn expand_parameter(ctx: &mut ExpandCtx, p: &Parameter, in_dquotes: bool) -> Result<PartOut, String> {
     let (name, index, op) = parse_param(&p.text);
@@ -479,6 +493,20 @@ fn expand_parameter(ctx: &mut ExpandCtx, p: &Parameter, in_dquotes: bool) -> Res
         "0" => return Ok(PartOut::Append(ctx.shell_name().to_owned())),
         "!" => {
             return Ok(PartOut::Append(ctx.last_bg_pid.to_string()));
+        }
+        "RANDOM" => {
+            let v = next_random(ctx.random_state);
+            return Ok(PartOut::Append(v.to_string()));
+        }
+        "SECONDS" => {
+            let now = cake_platform::get().time_seconds();
+            return Ok(PartOut::Append((now - ctx.start_time).max(0).to_string()));
+        }
+        "LINENO" => {
+            return Ok(PartOut::Append(ctx.lineno.to_string()));
+        }
+        "PPID" => {
+            return Ok(PartOut::Append(ctx.parent_pid.to_string()));
         }
         _ => {}
     }
@@ -1165,6 +1193,10 @@ mod tests {
             noglob: false,
             shopt: crate::executor::ShoptBits::default(),
             last_bg_pid: 0,
+            random_state: &mut 0,
+            start_time: 0,
+            lineno: 1,
+            parent_pid: 0,
         };
         expand_word(&mut ctx, &word).unwrap()
     }

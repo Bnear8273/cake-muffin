@@ -480,6 +480,17 @@ impl Platform for UnixPlatform {
             .unwrap_or_else(|_| String::new())
     }
 
+    fn time_seconds(&self) -> i64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0)
+    }
+
+    fn parent_pid(&self) -> i32 {
+        unsafe { libc::getppid() }
+    }
+
     fn set_current_dir(&self, path: &str) -> Result<(), PlatformError> {
         std::env::set_current_dir(path).map_err(|e| PlatformError::Io(e.to_string()))
     }

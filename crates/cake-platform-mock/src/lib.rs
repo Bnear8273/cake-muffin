@@ -234,6 +234,14 @@ impl Platform for MockPlatform {
         self.cwd.lock().unwrap().clone()
     }
 
+    fn time_seconds(&self) -> i64 {
+        1_000_000
+    }
+
+    fn parent_pid(&self) -> i32 {
+        1
+    }
+
     fn set_current_dir(&self, path: &str) -> Result<(), PlatformError> {
         *self.cwd.lock().unwrap() = path.to_owned();
         Ok(())

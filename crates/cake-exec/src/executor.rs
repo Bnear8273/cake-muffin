@@ -60,6 +60,25 @@ pub(crate) struct JobEntry {
     pub(crate) status: Option<ProcStatus>,
 }
 
+/// Byte offsets where each line of `src` starts (for `$LINENO`).
+fn line_starts_of(src: &str) -> Vec<usize> {
+    let mut starts = alloc::vec![0usize];
+    for (i, b) in src.bytes().enumerate() {
+        if b == b'\n' {
+            starts.push(i + 1);
+        }
+    }
+    starts
+}
+
+/// 1-based line number of a byte offset.
+fn line_number(line_starts: &[usize], offset: usize) -> u32 {
+    match line_starts.binary_search(&offset) {
+        Ok(i) => (i + 1) as u32,
+        Err(i) => i as u32,
+    }
+}
+
 /// Rebuild the original text of a word from its parts (for `jobs` output).
 pub(crate) fn word_text(w: &cake_syntax::Word) -> String {
     use cake_syntax::WordPart;
@@ -172,6 +191,12 @@ pub struct Executor {
     pub last_bg_pid: i32,
     /// Whether this shell is interactive (affects `fg`/`bg` error text).
     pub interactive: bool,
+    /// LCG state for `$RANDOM`.
+    pub(crate) random_state: u32,
+    /// Shell start time (epoch seconds) for `$SECONDS`.
+    pub(crate) start_time: i64,
+    /// Line number of the command currently being evaluated (`$LINENO`).
+    pub(crate) cmd_lineno: u32,
     /// Commands that were not found (persisted by the driver).
     pub blacklist: CommandBlacklist,
     /// `set -e`: exit on a failing simple command (outside exempt contexts).
@@ -213,6 +238,9 @@ impl Executor {
             next_job_id: 1,
             last_bg_pid: 0,
             interactive: false,
+            random_state: cake_platform::get().time_seconds() as u32 ^ 0x9e3779b9,
+            start_time: cake_platform::get().time_seconds(),
+            cmd_lineno: 1,
             blacklist: CommandBlacklist::new(),
             errexit: false,
             nounset: false,
@@ -276,7 +304,8 @@ impl Executor {
         self.run_pending_signal_traps();
         match parse(src) {
             Ok(prog) => {
-                let status = self.eval_program(&prog);
+                let line_starts = line_starts_of(src);
+                let status = self.eval_program(&prog, &line_starts);
                 self.last_status = status;
                 // A pending `set -e` exit is reported through the status; it
                 // is cleared here so a fresh input starts clean (interactive).
@@ -305,12 +334,13 @@ impl Executor {
 
     // --- program / list walking -----------------------------------------
 
-    fn eval_program(&mut self, prog: &Program) -> ProcStatus {
+    fn eval_program(&mut self, prog: &Program, line_starts: &[usize]) -> ProcStatus {
         let mut status = ProcStatus::Exit(0);
         for cc in &prog.commands {
             if self.exit_requested.is_some() || self.errexit_pending.is_some() {
                 break;
             }
+            self.cmd_lineno = line_number(line_starts, cc.span.start as usize);
             status = self.eval_complete(cc);
             self.run_pending_signal_traps();
         }
@@ -1073,6 +1103,10 @@ impl Executor {
             shopt: self.shopt,
             errexit: self.errexit,
             last_bg_pid: self.last_bg_pid,
+            random_state: &mut self.random_state,
+            start_time: self.start_time,
+            lineno: self.cmd_lineno,
+            parent_pid: cake_platform::get().parent_pid(),
         }
     }
 
