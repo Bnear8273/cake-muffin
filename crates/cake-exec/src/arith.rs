@@ -378,7 +378,7 @@ impl<'a> ArithParser<'a> {
             return Ok(-self.parse_power()?);
         }
         if self.eat_str("+") {
-            return Ok(self.parse_power()?);
+            return self.parse_power();
         }
         if self.eat_str("~") {
             return Ok(!self.parse_power()?);

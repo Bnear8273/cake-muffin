@@ -21,6 +21,12 @@ pub struct MockPlatform {
     xdg: Mutex<String>,
 }
 
+impl Default for MockPlatform {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MockPlatform {
     pub fn new() -> Self {
         Self {
@@ -100,6 +106,37 @@ impl Platform for MockPlatform {
         Ok(())
     }
 
+    fn signal_number(&self, sig: Signal) -> i32 {
+        // Return a stable test value regardless of host platform.
+        match sig {
+            Signal::Interrupt => 2,
+            Signal::Quit => 3,
+            Signal::Terminate => 15,
+            Signal::Child => 17,
+            Signal::Continue => 18,
+            Signal::Tstp => 20,
+            Signal::WindowChange => 28,
+            Signal::User1 => 10,
+            Signal::User2 => 12,
+            Signal::Other(n) => n,
+        }
+    }
+
+    fn signal_from_number(&self, n: i32) -> Signal {
+        match n {
+            2 => Signal::Interrupt,
+            3 => Signal::Quit,
+            10 => Signal::User1,
+            12 => Signal::User2,
+            15 => Signal::Terminate,
+            17 => Signal::Child,
+            18 => Signal::Continue,
+            20 => Signal::Tstp,
+            28 => Signal::WindowChange,
+            _ => Signal::Other(n),
+        }
+    }
+
     fn block_signals(&self, _sigs: &[Signal]) -> Result<SignalMask, PlatformError> {
         Err(PlatformError::Unsupported)
     }
@@ -154,6 +191,14 @@ impl Platform for MockPlatform {
 
     fn is_executable(&self, _path: &str) -> bool {
         true
+    }
+
+    fn null_device(&self) -> &'static str {
+        "/dev/null"
+    }
+
+    fn path_separator(&self) -> char {
+        '/'
     }
 
     fn stat(&self, _path: &str) -> FileInfo {

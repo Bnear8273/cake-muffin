@@ -43,7 +43,7 @@ pub fn expand_word(ctx: &ExpandCtx, word: &Word) -> Result<Vec<String>, String> 
     let ifs = ifs_chars(ctx.env);
 
     for part in &word.parts {
-        match expand_part(ctx, part, false, &ifs)? {
+        match expand_part(ctx, part, false)? {
             PartOut::Append(s) => {
                 cur.push_str(&s);
             }
@@ -76,7 +76,7 @@ pub fn expand_word(ctx: &ExpandCtx, word: &Word) -> Result<Vec<String>, String> 
 pub fn expand_word_quoted(ctx: &ExpandCtx, word: &Word) -> Result<String, String> {
     let mut out = String::new();
     for part in &word.parts {
-        match expand_part(ctx, part, true, &ifs_chars(ctx.env))? {
+        match expand_part(ctx, part, true)? {
             PartOut::Append(s) | PartOut::Split(s) => out.push_str(&s),
             // `"$@"` inside a quoted string: join params with spaces
             // (approximates bash; exact behaviour only matters with 0 params).
@@ -105,7 +105,7 @@ enum PartOut {
     Nothing,
 }
 
-fn expand_part(ctx: &ExpandCtx, part: &WordPart, in_dquotes: bool, ifs: &[char]) -> Result<PartOut, String> {
+fn expand_part(ctx: &ExpandCtx, part: &WordPart, in_dquotes: bool) -> Result<PartOut, String> {
     match part {
         WordPart::Literal(s, _) => Ok(PartOut::Append(s.clone())),
         WordPart::SingleQuoted(s, _) => Ok(PartOut::Append(s.clone())),
@@ -113,7 +113,7 @@ fn expand_part(ctx: &ExpandCtx, part: &WordPart, in_dquotes: bool, ifs: &[char])
         WordPart::DoubleQuoted(parts, _) => {
             let mut out = String::new();
             for p in parts {
-                match expand_part(ctx, p, true, ifs)? {
+                match expand_part(ctx, p, true)? {
                     PartOut::Append(s) | PartOut::Split(s) => out.push_str(&s),
                     PartOut::Fields(v) => {
                         for (i, f) in v.iter().enumerate() {
@@ -295,7 +295,7 @@ fn ansi_c_decode(s: &str) -> Result<String, String> {
             Some('x') | Some('u') | Some('U') => {
                 // Hex escape: collect up to 4 hex digits.
                 let mut hex = String::new();
-                while let Some(h) = chars.next() {
+                for h in chars.by_ref() {
                     if h.is_ascii_hexdigit() {
                         hex.push(h);
                     } else {
@@ -313,10 +313,10 @@ fn ansi_c_decode(s: &str) -> Result<String, String> {
                 let mut oct = String::new();
                 oct.push(c);
                 for _ in 0..2 {
-                    if let Some(h) = chars.next() {
-                        if ('0'..='7').contains(&h) {
-                            oct.push(h);
-                        }
+                    if let Some(h) = chars.next()
+                        && ('0'..='7').contains(&h)
+                    {
+                        oct.push(h);
                     }
                 }
                 let val = u32::from_str_radix(&oct, 8).unwrap_or(0);
@@ -334,7 +334,7 @@ fn ansi_c_decode(s: &str) -> Result<String, String> {
 impl<'a> ExpandCtx<'a> {
     pub fn shell_name(&self) -> &str {
         self.positional
-            .get(0)
+            .first()
             .map(String::as_str)
             .unwrap_or("cake")
     }

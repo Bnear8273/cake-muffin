@@ -25,8 +25,8 @@ fn match_inner(pat: &[u8], text: &[u8]) -> bool {
             if let Some(len) = match_class(pat, p, text[t]) {
                 p += len;
                 t += 1;
-            } else if star_p.is_some() {
-                p = star_p.unwrap() + 1;
+            } else if let Some(sp) = star_p {
+                p = sp + 1;
                 star_t = Some(star_t.unwrap() + 1);
                 t = star_t.unwrap();
             } else {

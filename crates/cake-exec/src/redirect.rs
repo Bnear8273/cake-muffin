@@ -62,7 +62,7 @@ pub fn setup_redirects(ctx: &ExpandCtx, redirects: &[Redirect]) -> Result<Comman
     Ok(fds)
 }
 
-fn slot_mut<'a>(fds: &'a mut CommandFds, slot: Slot) -> &'a mut ChildFd {
+fn slot_mut(fds: &mut CommandFds, slot: Slot) -> &mut ChildFd {
     match slot {
         Slot::Stdin => &mut fds.stdin,
         Slot::Stdout => &mut fds.stdout,

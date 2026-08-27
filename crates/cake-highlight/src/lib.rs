@@ -21,7 +21,11 @@ use cake_syntax::Token;
 ///
 /// The line need not be syntactically complete; partial input is coloured
 /// up to the valid prefix and the remainder is appended as-is.
-pub fn highlight_line(src: &str) -> String {
+///
+/// `is_command` decides whether a word in command position names a real
+/// command (builtin, function or executable on `PATH`); found commands are
+/// green, not-found ones red.
+pub fn highlight_line(src: &str, is_command: &dyn Fn(&str) -> bool) -> String {
     let mut out = String::new();
     let mut lexer = Lexer::new(src);
     lexer.ctx = LexContext {
@@ -41,7 +45,7 @@ pub fn highlight_line(src: &str) -> String {
                 if start > pos {
                     out.push_str(&src[pos..start]);
                 }
-                out.push_str(color_for(&tok, was_cmd));
+                out.push_str(color_for(&tok, was_cmd, is_command));
                 out.push_str(&tok.text);
                 out.push_str("\x1b[0m");
                 pos = tok.span.end as usize;
@@ -59,10 +63,11 @@ pub fn highlight_line(src: &str) -> String {
     out
 }
 
-fn color_for(tok: &Token, was_cmd: bool) -> &'static str {
+fn color_for(tok: &Token, was_cmd: bool, is_command: &dyn Fn(&str) -> bool) -> &'static str {
     match tok.kind {
-        Word if was_cmd && is_keyword(tok.text.as_str()) => "\x1b[1;35m", // magenta bold
-        Word if was_cmd => "\x1b[32m",                                     // green (command)
+        Word if was_cmd && is_keyword(tok.text.as_str()) => "\x1b[1;35m", // magenta bold (keyword)
+        Word if was_cmd && is_command(tok.text.as_str()) => "\x1b[32m",    // green (command found)
+        Word if was_cmd => "\x1b[31m",                                     // red (command not found)
         Word => "\x1b[0m",                                                  // default
         Assignment => "\x1b[36m",                                           // cyan
         Lparen | Rparen | Lbrace | Rbrace | Bang => "\x1b[1;36m",          // cyan bold
@@ -94,19 +99,12 @@ fn is_keyword(s: &str) -> bool {
 fn update_ctx(lexer: &mut Lexer, tok: &Token) {
     use cake_syntax::lexer::LexContext;
     match tok.kind {
-        Word | Assignment => {
-            if tok.text == "if"
-                || tok.text == "for"
-                || tok.text == "while"
-                || tok.text == "until"
-                || tok.text == "case"
-                || tok.text == "function"
-                || tok.text == "select"
-                || tok.text == "time"
-                || tok.text == "in"
-                || tok.text == "!"
-            {
-                // Keywords that keep us in command position.
+        Word => {
+            if matches!(
+                tok.text.as_str(),
+                "if" | "then" | "else" | "elif" | "for" | "do" | "while" | "until"
+                    | "case" | "function" | "select" | "time" | "in" | "!"
+            ) {
                 lexer.ctx = LexContext {
                     cmd_pos: true,
                     ..Default::default()
@@ -117,6 +115,13 @@ fn update_ctx(lexer: &mut Lexer, tok: &Token) {
                     ..Default::default()
                 };
             }
+        }
+        Assignment => {
+            // Prefix assignments are followed by the command they prefix.
+            lexer.ctx = LexContext {
+                cmd_pos: true,
+                ..Default::default()
+            };
         }
         Lbrace => {
             // `{` starts a block; the next token is a command.
@@ -158,22 +163,46 @@ fn update_ctx(lexer: &mut Lexer, tok: &Token) {
 mod tests {
     use super::*;
 
+    fn found(names: &'static [&'static str]) -> impl Fn(&str) -> bool {
+        move |n: &str| names.contains(&n)
+    }
+
     #[test]
     fn keywords_are_magenta() {
-        let out = highlight_line("if true; then");
+        let out = highlight_line("if true; then", &found(&["true"]));
         assert!(out.contains("\x1b[1;35mif\x1b[0m"));
         assert!(out.contains("\x1b[1;35mthen\x1b[0m"));
     }
 
     #[test]
-    fn command_is_green() {
-        let out = highlight_line("ls -la");
+    fn command_found_is_green() {
+        let out = highlight_line("ls -la", &found(&["ls"]));
+        assert!(out.contains("\x1b[32mls\x1b[0m"));
+    }
+
+    #[test]
+    fn command_not_found_is_red() {
+        let out = highlight_line("llll", &found(&["ls"]));
+        assert!(out.contains("\x1b[31mllll\x1b[0m"));
+    }
+
+    #[test]
+    fn body_command_after_then_is_green() {
+        let out = highlight_line("if true; then ls -la; fi", &found(&["ls"]));
+        assert!(out.contains("\x1b[32mls\x1b[0m"));
+        assert!(out.contains("\x1b[1;35mfi\x1b[0m"));
+    }
+
+    #[test]
+    fn assignment_keeps_command_position() {
+        let out = highlight_line("A=1 ls", &found(&["ls"]));
+        assert!(out.contains("\x1b[36mA=1\x1b[0m"));
         assert!(out.contains("\x1b[32mls\x1b[0m"));
     }
 
     #[test]
     fn variable_is_highlighted() {
-        let out = highlight_line("echo $HOME");
+        let out = highlight_line("echo $HOME", &found(&["echo"]));
         // The variable token isn't distinguished by kind; at minimum the
         // command and text survive.
         assert!(out.contains("echo"));
@@ -182,7 +211,7 @@ mod tests {
 
     #[test]
     fn operators_colored() {
-        let out = highlight_line("a && b | c");
+        let out = highlight_line("a && b | c", &found(&["a", "b", "c"]));
         assert!(out.contains("\x1b[1;36m&&\x1b[0m"));
         assert!(out.contains("\x1b[1;36m|\x1b[0m"));
     }
@@ -190,7 +219,7 @@ mod tests {
     #[test]
     fn partial_line_is_handled() {
         // Unterminated double quote: no panic, prefix highlighted.
-        let out = highlight_line("echo \"unclosed");
+        let out = highlight_line("echo \"unclosed", &found(&["echo"]));
         assert!(out.contains("echo"));
     }
 }

@@ -418,11 +418,11 @@ fn find_dquote(text: &str, start: usize) -> Option<usize> {
                             i = e + 1;
                             continue;
                         }
-                    } else if nc == '{' {
-                        if let Some(e) = find_braced(text, i + cl + 1) {
-                            i = e + 1;
-                            continue;
-                        }
+                    } else if nc == '{'
+                        && let Some(e) = find_braced(text, i + cl + 1)
+                    {
+                        i = e + 1;
+                        continue;
                     }
                 }
                 i += cl;
@@ -514,11 +514,11 @@ fn find_command_subst(text: &str, start: usize) -> Option<usize> {
                             i = e + 1;
                             continue;
                         }
-                    } else if nc == '{' {
-                        if let Some(e) = find_braced(text, i + cl + 1) {
-                            i = e + 1;
-                            continue;
-                        }
+                    } else if nc == '{'
+                        && let Some(e) = find_braced(text, i + cl + 1)
+                    {
+                        i = e + 1;
+                        continue;
                     }
                 }
             }
@@ -568,11 +568,10 @@ fn find_arith(text: &str, start: usize) -> Option<usize> {
                 let cl = c.len_utf8();
                 if i + cl < text.len() && text[i + cl..].starts_with('(')
                     && text[i + cl + 1..].starts_with('(')
+                    && let Some(e) = find_arith(text, i + cl + 2)
                 {
-                    if let Some(e) = find_arith(text, i + cl + 2) {
-                        i = e + 1;
-                        continue;
-                    }
+                    i = e + 1;
+                    continue;
                 }
             }
             _ => {}
@@ -597,11 +596,11 @@ fn find_braced(text: &str, start: usize) -> Option<usize> {
             }
             '$' => {
                 let cl = c.len_utf8();
-                if i + cl < text.len() && text[i + cl..].starts_with('{') {
-                    if let Some(e) = find_braced(text, i + cl + 1) {
-                        i = e + 1;
-                        continue;
-                    }
+                if i + cl < text.len() && text[i + cl..].starts_with('{')
+                    && let Some(e) = find_braced(text, i + cl + 1)
+                {
+                    i = e + 1;
+                    continue;
                 }
             }
             '\\' => {

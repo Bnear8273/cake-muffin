@@ -12,6 +12,9 @@ use alloc::vec::Vec;
 ///
 /// Returns `Err` on an unterminated quote so callers can show a friendly
 /// error instead of silently dropping the rest of the line.
+// The `()` error is a temporary M0 leftover (superseded by the real parser);
+// keep it minimal until the module is removed.
+#[allow(clippy::result_unit_err)]
 pub fn split_command_line(src: &str) -> Result<Vec<String>, ()> {
     let mut args = Vec::new();
     let mut cur = String::new();

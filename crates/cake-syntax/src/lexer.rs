@@ -125,16 +125,15 @@ impl<'a> Lexer<'a> {
                     break;
                 }
             }
-            if digits < rest.len() {
-                if let Some(after) = rest[digits..].chars().next() {
-                    if matches!(after, '<' | '>') {
-                        let start = self.pos;
-                        for _ in 0..digits {
-                            self.advance();
-                        }
-                        return Ok(self.mk(TokenKind::IoNumber, start));
-                    }
+            if digits < rest.len()
+                && let Some(after) = rest[digits..].chars().next()
+                && matches!(after, '<' | '>')
+            {
+                let start = self.pos;
+                for _ in 0..digits {
+                    self.advance();
                 }
+                return Ok(self.mk(TokenKind::IoNumber, start));
             }
         }
 
@@ -492,12 +491,12 @@ impl<'a> Lexer<'a> {
 
         // In command position (and not a redirect target), a word of the form
         // NAME=... is an assignment; `NAME=(...)` an array assignment.
-        if (self.ctx.cmd_pos || self.ctx.in_typeset) && !self.ctx.in_redir {
-            if let Some(eq) = text.find('=') {
-                if is_valid_identifier(&text[..eq]) {
-                    return Ok(Token::new(TokenKind::Assignment, self.span_from(start), text));
-                }
-            }
+        if (self.ctx.cmd_pos || self.ctx.in_typeset)
+            && !self.ctx.in_redir
+            && let Some(eq) = text.find('=')
+            && is_valid_identifier(&text[..eq])
+        {
+            return Ok(Token::new(TokenKind::Assignment, self.span_from(start), text));
         }
 
         Ok(Token::new(TokenKind::Word, self.span_from(start), text))

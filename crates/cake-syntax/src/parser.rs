@@ -785,9 +785,9 @@ impl<'a> Parser<'a> {
 
     fn parse_redirect_list(&mut self) -> Vec<Redirect> {
         let mut redirects = Vec::new();
-        loop {
-            match self.current.kind {
-                TokenKind::Greater
+        while matches!(
+            self.current.kind,
+            TokenKind::Greater
                 | TokenKind::GreatGreat
                 | TokenKind::GreaterAnd
                 | TokenKind::GreatBar
@@ -800,13 +800,11 @@ impl<'a> Parser<'a> {
                 | TokenKind::LessLessDash
                 | TokenKind::AmpGreat
                 | TokenKind::AmpGreatGreat
-                | TokenKind::IoNumber => {
-                    match self.parse_redirect() {
-                        Ok(r) => redirects.push(r),
-                        Err(()) => break,
-                    }
-                }
-                _ => break,
+                | TokenKind::IoNumber
+        ) {
+            match self.parse_redirect() {
+                Ok(r) => redirects.push(r),
+                Err(()) => break,
             }
         }
         redirects

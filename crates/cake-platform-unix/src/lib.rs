@@ -8,7 +8,9 @@
 //! The platform crate's [`Termios`] is an opaque `[u8; 64]` buffer. Unix
 //! `termios` fits comfortably inside it (60 bytes on Linux, 36 on macOS);
 //! we cast the buffer to `libc::termios` for `tcgetattr`/`tcsetattr` and to
-//! mutate flags for raw mode.
+//! mutate flags for raw mode. A compile-time assertion below fails the build
+//! on any platform whose `termios` (or `sigset_t`) grows past the opaque
+//! buffer, instead of silently overflowing.
 
 use std::ffi::CString;
 use std::os::fd::AsRawFd;
@@ -20,6 +22,11 @@ use cake_platform::{
     WaitStatus, XdgKind,
 };
 use nix::unistd::{ForkResult, Pid};
+
+/// Compile-time guard: the opaque [`Termios`] buffer holds 64 bytes.
+const _: () = assert!(core::mem::size_of::<libc::termios>() <= 64);
+/// Compile-time guard: the opaque [`SignalMask`] buffer holds 128 bytes.
+const _: () = assert!(core::mem::size_of::<libc::sigset_t>() <= 128);
 
 /// The Unix platform backend. Stateless: most operations are syscalls on
 /// process-global state.
@@ -75,7 +82,7 @@ impl Platform for UnixPlatform {
                 }
                 // 2. Redirections.
                 for (target, target_fd) in [(&cfg.stdin, 0), (&cfg.stdout, 1), (&cfg.stderr, 2)] {
-                    if dup_to_target(target, target_fd).is_err() {
+                    if dup_to_target(target, target_fd, self.null_device()).is_err() {
                         unsafe { libc::_exit(1) };
                     }
                 }
@@ -118,10 +125,10 @@ impl Platform for UnixPlatform {
                 Ok(WaitStatus::Exited(code as u8))
             }
             Ok(nix::sys::wait::WaitStatus::Signaled(_, sig, _)) => {
-                Ok(WaitStatus::Signaled(Signal::from_number(sig as i32)))
+                Ok(WaitStatus::Signaled(self.signal_from_number(sig as i32)))
             }
             Ok(nix::sys::wait::WaitStatus::Stopped(_, sig)) => {
-                Ok(WaitStatus::Stopped(Signal::from_number(sig as i32)))
+                Ok(WaitStatus::Stopped(self.signal_from_number(sig as i32)))
             }
             Ok(nix::sys::wait::WaitStatus::Continued(_)) => Ok(WaitStatus::Continued),
             Ok(_) => Ok(WaitStatus::Exited(0)),
@@ -169,6 +176,28 @@ impl Platform for UnixPlatform {
         Ok(())
     }
 
+    fn signal_number(&self, sig: Signal) -> i32 {
+        nix_signal(sig) as i32
+    }
+
+    fn signal_from_number(&self, n: i32) -> Signal {
+        match nix::sys::signal::Signal::try_from(n) {
+            Ok(s) => match s {
+                nix::sys::signal::Signal::SIGINT => Signal::Interrupt,
+                nix::sys::signal::Signal::SIGQUIT => Signal::Quit,
+                nix::sys::signal::Signal::SIGTERM => Signal::Terminate,
+                nix::sys::signal::Signal::SIGCHLD => Signal::Child,
+                nix::sys::signal::Signal::SIGCONT => Signal::Continue,
+                nix::sys::signal::Signal::SIGTSTP => Signal::Tstp,
+                nix::sys::signal::Signal::SIGWINCH => Signal::WindowChange,
+                nix::sys::signal::Signal::SIGUSR1 => Signal::User1,
+                nix::sys::signal::Signal::SIGUSR2 => Signal::User2,
+                _ => Signal::Other(n),
+            },
+            Err(_) => Signal::Other(n),
+        }
+    }
+
     fn block_signals(&self, sigs: &[Signal]) -> Result<SignalMask, PlatformError> {
         let mut set: libc::sigset_t = unsafe { core::mem::zeroed() };
         unsafe {
@@ -176,7 +205,7 @@ impl Platform for UnixPlatform {
         }
         for sig in sigs {
             unsafe {
-                libc::sigaddset(&mut set, sig.number());
+                libc::sigaddset(&mut set, self.signal_number(*sig));
             }
         }
         let mut old: libc::sigset_t = unsafe { core::mem::zeroed() };
@@ -338,6 +367,14 @@ impl Platform for UnixPlatform {
 
     // --- FS --------------------------------------------------------------
 
+    fn null_device(&self) -> &'static str {
+        "/dev/null"
+    }
+
+    fn path_separator(&self) -> char {
+        '/'
+    }
+
     fn is_executable(&self, path: &str) -> bool {
         let p = std::path::Path::new(path);
         p.is_file()
@@ -352,8 +389,10 @@ impl Platform for UnixPlatform {
     fn stat(&self, path: &str) -> FileInfo {
         use std::os::unix::fs::PermissionsExt;
         let p = std::path::Path::new(path);
-        let mut info = FileInfo::default();
-        info.exists = p.exists();
+        let mut info = FileInfo {
+            exists: p.exists(),
+            ..Default::default()
+        };
         let md = match std::fs::metadata(path) {
             Ok(md) => md,
             Err(_) => return info,
@@ -377,10 +416,10 @@ impl Platform for UnixPlatform {
             XdgKind::Config => ("XDG_CONFIG_HOME", ".config"),
             XdgKind::Cache => ("XDG_CACHE_HOME", ".cache"),
         };
-        if let Ok(dir) = env::var(env_name) {
-            if !dir.is_empty() {
-                return dir;
-            }
+        if let Ok(dir) = env::var(env_name)
+            && !dir.is_empty()
+        {
+            return dir;
         }
         let home = env::var("HOME").unwrap_or_else(|_| "/tmp".into());
         PathBuf::from(home)
@@ -409,7 +448,7 @@ fn nix_signal(sig: Signal) -> nix::sys::signal::Signal {
         Signal::Terminate => nix::sys::signal::Signal::SIGTERM,
         Signal::Child => nix::sys::signal::Signal::SIGCHLD,
         Signal::Continue => nix::sys::signal::Signal::SIGCONT,
-        Signal::Stop => nix::sys::signal::Signal::SIGTSTP,
+        Signal::Tstp => nix::sys::signal::Signal::SIGTSTP,
         Signal::WindowChange => nix::sys::signal::Signal::SIGWINCH,
         Signal::User1 => nix::sys::signal::Signal::SIGUSR1,
         Signal::User2 => nix::sys::signal::Signal::SIGUSR2,
@@ -419,14 +458,14 @@ fn nix_signal(sig: Signal) -> nix::sys::signal::Signal {
 }
 
 /// Apply one child-fd redirection in the child of a fork.
-fn dup_to_target(target: &ChildFd, target_fd: Fd) -> Result<(), ()> {
+fn dup_to_target(target: &ChildFd, target_fd: Fd, devnull: &str) -> Result<(), ()> {
     match target {
         ChildFd::Inherit => Ok(()),
         ChildFd::DevNull => {
             let devnull = std::fs::OpenOptions::new()
                 .read(true)
                 .write(true)
-                .open("/dev/null")
+                .open(devnull)
                 .map_err(|_| ())?;
             let fd = devnull.as_raw_fd();
             if unsafe { libc::dup2(fd, target_fd) } < 0 {

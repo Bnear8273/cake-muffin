@@ -19,10 +19,16 @@ use alloc::borrow::ToOwned;
 use alloc::collections::BTreeSet;
 use alloc::string::String;
 
+/// Whether `name` looks path-specified (`/` on Unix, `\` on Windows, or a
+/// drive-qualified name) and therefore must not be blacklisted.
+fn has_path_separator(name: &str) -> bool {
+    name.contains('/') || name.contains('\\')
+}
+
 /// A set of blacklisted command names.
 ///
-/// Never contains names with a `/` (only bare command names are blacklisted;
-/// path-specified commands resolve via file completion).
+/// Never contains names with a path separator (only bare command names are
+/// blacklisted; path-specified commands resolve via file completion).
 #[derive(Debug, Clone, Default)]
 pub struct CommandBlacklist {
     set: BTreeSet<String>,
@@ -38,7 +44,7 @@ impl CommandBlacklist {
         let mut set = BTreeSet::new();
         for line in text.lines() {
             let name = line.trim();
-            if !name.is_empty() && !name.contains('/') {
+            if !name.is_empty() && !has_path_separator(name) {
                 set.insert(name.to_owned());
             }
         }
@@ -57,12 +63,12 @@ impl CommandBlacklist {
 
     /// Whether `name` is blacklisted.
     pub fn contains(&self, name: &str) -> bool {
-        !name.contains('/') && self.set.contains(name)
+        !has_path_separator(name) && self.set.contains(name)
     }
 
     /// Add a command name to the blacklist.
     pub fn insert(&mut self, name: &str) {
-        if !name.contains('/') {
+        if !has_path_separator(name) {
             self.set.insert(name.to_owned());
         }
     }

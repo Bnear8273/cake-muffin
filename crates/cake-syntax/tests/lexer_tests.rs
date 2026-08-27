@@ -99,8 +99,7 @@ fn quotes() {
 
 #[test]
 fn command_position_operators() {
-    let mut ctx = LexContext::default();
-    ctx.cmd_pos = true;
+    let ctx = LexContext { cmd_pos: true, ..Default::default() };
 
     // ( subshell
     let t = tokenize_with_ctx("( echo hi )", ctx);
@@ -144,8 +143,7 @@ fn expansions() {
 
 #[test]
 fn double_bracket() {
-    let mut ctx = LexContext::default();
-    ctx.cmd_pos = true;
+    let ctx = LexContext { cmd_pos: true, ..Default::default() };
     let t = tokenize_with_ctx("[[ -n \"$var\" ]]", ctx);
     assert_eq!(t[0].kind, TokenKind::DoubleBracketOpen);
     assert_eq!(t[1].kind, TokenKind::Word);
@@ -157,17 +155,14 @@ fn double_bracket() {
 
 #[test]
 fn double_bracket_close() {
-    let mut ctx = LexContext::default();
-    ctx.in_cond = true;
+    let ctx = LexContext { in_cond: true, ..Default::default() };
     let t = tokenize_with_ctx("]]", ctx);
     assert_eq!(t[0].kind, TokenKind::DoubleBracketClose);
 }
 
 #[test]
 fn arith_command() {
-    let mut ctx = LexContext::default();
-    ctx.cmd_pos = true;
-    ctx.in_arith = true;
+    let ctx = LexContext { cmd_pos: true, in_arith: true, ..Default::default() };
     let t = tokenize_with_ctx("i = i + 1", ctx);
     assert_eq!(t[0].kind, TokenKind::Word);
     assert_eq!(t[0].text, "i");
@@ -195,8 +190,7 @@ fn unterminated_quote_errors() {
 
 #[test]
 fn assignment_detection() {
-    let mut ctx = LexContext::default();
-    ctx.cmd_pos = true;
+    let ctx = LexContext { cmd_pos: true, ..Default::default() };
     let t = tokenize_with_ctx("FOO=bar cmd", ctx);
     assert_eq!(t[0].kind, TokenKind::Assignment);
     assert_eq!(t[0].text, "FOO=bar");

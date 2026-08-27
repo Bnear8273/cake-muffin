@@ -37,39 +37,70 @@ pub fn current_word(line: &str, pos: usize) -> (usize, &str) {
     (start, &before[start..])
 }
 
+/// Find the `$` that starts the variable name being typed in `word`, if any.
+///
+/// The tail after the `$` must be a plausible variable-name prefix: empty
+/// (bare `$`), or all alphanumerics/underscores, possibly closed by a
+/// trailing quote. Returns the byte offset of the `$` within `word`, taking
+/// the `$` closest to the cursor (last in the word).
+pub fn dollar_in_word(word: &str) -> Option<usize> {
+    word.char_indices()
+        .rev()
+        .find(|(i, c)| {
+            if *c != '$' {
+                return false;
+            }
+            let tail = word[*i + c.len_utf8()..].trim_end_matches(['"', '\'']);
+            tail.chars().all(|c| c.is_alphanumeric() || c == '_')
+        })
+        .map(|(i, _)| i)
+}
+
 /// Classify what the word under the cursor is completing.
 pub fn classify(line: &str, pos: usize) -> CompleteKind {
     let (_, word) = current_word(line, pos);
-    // `$name` → variable completion.
-    let trimmed = word.trim_start_matches('"').trim_start_matches('\'');
-    if trimmed.starts_with('$') && trimmed.len() > 1 {
+    // `$name` (or a bare `$`) → variable completion.
+    if dollar_in_word(word).is_some() {
         return CompleteKind::Variable;
     }
 
-    // Drive the lexer over the text before the cursor to learn whether the
-    // current position is in command position.
+    // Drive the lexer over the text before the cursor to learn the context
+    // at the cursor position.
     let before = &line[..pos.min(line.len())];
     let mut lexer = Lexer::new(before);
     lexer.ctx = LexContext {
         cmd_pos: true,
         ..Default::default()
     };
-    let mut was_cmd = true;
-    loop {
-        let cmd_pos_before = lexer.ctx.cmd_pos;
-        match lexer.next_token() {
-            Ok(tok) => {
-                if tok.kind == Eof {
-                    break;
-                }
-                was_cmd = cmd_pos_before;
-                update_ctx(&mut lexer, &tok);
-            }
-            Err(_) => break,
+    // The context just before the last real token, and whether that token is
+    // a (possibly partial) word ending exactly at the cursor.
+    let mut ctx_before_last: Option<LexContext> = None;
+    let mut last_is_word_like = false;
+    let mut last_end = 0usize;
+    let mut saw_token = false;
+    while let Ok(tok) = lexer.next_token() {
+        if tok.kind == Eof {
+            break;
         }
+        saw_token = true;
+        ctx_before_last = Some(lexer.ctx);
+        last_end = tok.span.end as usize;
+        last_is_word_like = matches!(tok.kind, Word | Assignment);
+        update_ctx(&mut lexer, &tok);
     }
 
-    if was_cmd {
+    // If the cursor sits at the end of a word being typed, the relevant
+    // context is the one *before* that word; otherwise (trailing operator or
+    // whitespace) it is the context *after* the last token.
+    let ctx_at_cursor = if saw_token && last_is_word_like && last_end == before.len() {
+        ctx_before_last.unwrap_or(lexer.ctx)
+    } else {
+        lexer.ctx
+    };
+
+    if ctx_at_cursor.in_redir {
+        CompleteKind::File
+    } else if ctx_at_cursor.cmd_pos {
         CompleteKind::Command
     } else {
         CompleteKind::File
@@ -85,23 +116,9 @@ pub fn filter_candidates(prefix: &str, candidates: &[String]) -> Vec<String> {
         .collect()
 }
 
-/// The longest common prefix of a set of candidates.
-pub fn common_prefix(candidates: &[String]) -> String {
-    let Some(first) = candidates.first() else {
-        return String::new();
-    };
-    let mut prefix = first.clone();
-    for c in &candidates[1..] {
-        while !c.starts_with(&prefix) {
-            prefix.pop();
-        }
-    }
-    prefix
-}
-
 fn update_ctx(lexer: &mut Lexer, tok: &cake_syntax::Token) {
     match tok.kind {
-        Word | Assignment => {
+        Word => {
             let kw = tok.text.as_str();
             if matches!(
                 kw,
@@ -118,6 +135,12 @@ fn update_ctx(lexer: &mut Lexer, tok: &cake_syntax::Token) {
                     ..Default::default()
                 };
             }
+        }
+        Assignment => {
+            lexer.ctx = LexContext {
+                cmd_pos: true,
+                ..Default::default()
+            };
         }
         Lbrace | Lparen | ArithOpen | DoubleBracketOpen | Semi | SemiSemi | Amp | Newline
         | Pipe | PipeAmp | AndAnd | OrOr | Bang => {
@@ -159,6 +182,11 @@ mod tests {
         assert_eq!(classify("ls -l /tm", 10), CompleteKind::File);
         assert_eq!(classify("if tru", 6), CompleteKind::Command);
         assert_eq!(classify("echo $HO", 8), CompleteKind::Variable);
+        assert_eq!(classify("$", 1), CompleteKind::Variable);
+        assert_eq!(classify("ls | ", 5), CompleteKind::Command);
+        assert_eq!(classify("cat < ", 6), CompleteKind::File);
+        assert_eq!(classify("git status && ", 14), CompleteKind::Command);
+        assert_eq!(classify("echo \"$HO", 9), CompleteKind::Variable);
     }
 
     #[test]
@@ -173,12 +201,5 @@ mod tests {
         let all = s(&["apple", "apricot", "banana", "cherry"]);
         let got = filter_candidates("ap", &all);
         assert_eq!(got, s(&["apple", "apricot"]));
-    }
-
-    #[test]
-    fn computes_common_prefix() {
-        let cands = s(&["apple", "apricot"]);
-        assert_eq!(common_prefix(&cands), "ap");
-        assert_eq!(common_prefix(&[]), "");
     }
 }

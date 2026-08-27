@@ -17,8 +17,9 @@ use cake_env::EnvStack;
 ///   found").
 pub fn find_in_path(env: &EnvStack, cmd: &str) -> Option<String> {
     let platform = cake_platform::get();
+    let sep = platform.path_separator();
 
-    if cmd.contains('/') {
+    if cmd.contains(platform.path_separator()) || cmd.contains('\\') {
         return if platform.is_executable(cmd) {
             Some(cmd.to_owned())
         } else {
@@ -31,10 +32,10 @@ pub fn find_in_path(env: &EnvStack, cmd: &str) -> Option<String> {
         if dir.is_empty() {
             continue;
         }
-        let p = if dir.ends_with('/') {
+        let p = if dir.ends_with(sep) {
             alloc::format!("{dir}{cmd}")
         } else {
-            alloc::format!("{dir}/{cmd}")
+            alloc::format!("{dir}{sep}{cmd}")
         };
         if platform.is_executable(&p) {
             return Some(p);

@@ -8,6 +8,9 @@ use crate::path::find_in_path;
 
 /// Describe what `name` resolves to, for `type`.
 pub fn describe(exec: &Executor, name: &str) -> String {
+    if let Some(value) = exec.aliases.get(name) {
+        return alloc::format!("an alias for {value}");
+    }
     if is_builtin(name) {
         return "a shell builtin".into();
     }
@@ -15,9 +18,9 @@ pub fn describe(exec: &Executor, name: &str) -> String {
         return "a function".into();
     }
     if let Some(path) = find_in_path(&exec.env, name) {
-        return alloc::format!("{path}");
+        return path;
     }
-    alloc::format!("cake: not found")
+    "cake: not found".into()
 }
 
 /// Look up a command name: builtin, function, or external path.

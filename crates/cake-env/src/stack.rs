@@ -119,10 +119,10 @@ impl EnvStack {
 
     /// Set a variable in the innermost scope, respecting readonly bindings.
     pub fn set(&mut self, name: &str, var: EnvVar) -> Result<(), EnvSetError> {
-        if let Some(existing) = self.get(name) {
-            if existing.is_readonly() {
-                return Err(EnvSetError::Readonly(name.to_owned()));
-            }
+        if let Some(existing) = self.get(name)
+            && existing.is_readonly()
+        {
+            return Err(EnvSetError::Readonly(name.to_owned()));
         }
         self.top_scope_mut().vars.insert(name.to_owned(), var);
         Ok(())
@@ -130,10 +130,10 @@ impl EnvStack {
 
     /// Set a variable in the global scope.
     pub fn set_global(&mut self, name: &str, var: EnvVar) -> Result<(), EnvSetError> {
-        if let Some(existing) = self.globals.vars.get(name) {
-            if existing.is_readonly() {
-                return Err(EnvSetError::Readonly(name.to_owned()));
-            }
+        if let Some(existing) = self.globals.vars.get(name)
+            && existing.is_readonly()
+        {
+            return Err(EnvSetError::Readonly(name.to_owned()));
         }
         self.globals.vars.insert(name.to_owned(), var);
         Ok(())

@@ -25,6 +25,8 @@ pub fn run_builtin(exec: &mut Executor, name: &str, args: &[String]) -> Option<R
         "readonly" => readonly(exec, args),
         "shift" => shift(exec, args),
         "command" => Ok(ProcStatus::Exit(0)),
+        "alias" => alias(exec, args),
+        "unalias" => unalias(exec, args),
         _ => return None,
     })
 }
@@ -128,10 +130,10 @@ fn echo_escapes(s: &str) -> String {
             Some('0') => {
                 let mut oct = String::from("0");
                 for _ in 0..2 {
-                    if let Some(h) = chars.next() {
-                        if ('0'..='7').contains(&h) {
-                            oct.push(h);
-                        }
+                    if let Some(h) = chars.next()
+                        && ('0'..='7').contains(&h)
+                    {
+                        oct.push(h);
                     }
                 }
                 let val = u32::from_str_radix(&oct, 8).unwrap_or(0);
@@ -165,7 +167,7 @@ fn printf(args: &[String]) -> Result<ProcStatus, String> {
         }
         // Parse a printf format spec minimally.
         let mut spec = String::from("%");
-        while let Some(n) = chars.next() {
+        for n in chars.by_ref() {
             spec.push(n);
             if n.is_ascii_alphabetic() {
                 break;
@@ -221,7 +223,7 @@ fn printf(args: &[String]) -> Result<ProcStatus, String> {
         // M2a: each spec consumes the first argument (no cycling yet).
     }
     // Any trailing literal text.
-    buf.push_str(&chars.as_str());
+    buf.push_str(chars.as_str());
     out(&buf);
     Ok(ProcStatus::Exit(0))
 }
@@ -241,10 +243,10 @@ fn printf_escape(chars: &mut core::str::Chars<'_>) -> String {
         Some('0') => {
             let mut oct = String::from("0");
             for _ in 0..2 {
-                if let Some(h) = chars.next() {
-                    if ('0'..='7').contains(&h) {
-                        oct.push(h);
-                    }
+                if let Some(h) = chars.next()
+                    && ('0'..='7').contains(&h)
+                {
+                    oct.push(h);
                 }
             }
             let val = u32::from_str_radix(&oct, 8).unwrap_or(0);
@@ -253,10 +255,10 @@ fn printf_escape(chars: &mut core::str::Chars<'_>) -> String {
         Some('x') => {
             let mut hex = String::new();
             for _ in 0..2 {
-                if let Some(h) = chars.next() {
-                    if h.is_ascii_hexdigit() {
-                        hex.push(h);
-                    }
+                if let Some(h) = chars.next()
+                    && h.is_ascii_hexdigit()
+                {
+                    hex.push(h);
                 }
             }
             let val = u32::from_str_radix(&hex, 16).unwrap_or(0);
@@ -315,6 +317,90 @@ fn cd(exec: &mut Executor, args: &[String]) -> Result<ProcStatus, String> {
 fn pwd() -> Result<ProcStatus, String> {
     out(&alloc::format!("{}\n", cake_platform::get().current_dir()));
     Ok(ProcStatus::Exit(0))
+}
+
+// --- alias / unalias ---
+//
+// Aliases are session-scoped (like bash, which re-defines them from rc files
+// each session). cake has no rc file yet, so define them in the interactive
+// REPL, e.g.:
+//
+//   alias ls='ls --color=auto'
+//   alias grep='grep --color=auto'
+//   alias diff='diff --color=auto'
+//
+// # Why colour aliases?
+//
+// cake's child processes inherit the terminal stdout, so tools that detect a
+// tty themselves (git, rg, bat, fzf) colourise automatically. But GNU
+// coreutils tools require an explicit flag that shells usually provide via
+// aliases: `ls --color=auto`, `grep --color=auto`, `diff --color=auto`,
+// `gcc -fdiagnostics-color=auto`, `ip -color=auto`, ...
+//
+// Use `--color=auto`/`--color=tty` (colourise only on a tty) rather than
+// `--color=always`, so piped output (`ls | grep`) stays clean.
+//
+// Platform note: BSD/macOS `ls` colours via the `CLICOLOR` env var + `-G`
+// flag instead of `--color`; if a macOS backend ever appears, the aliases
+// here would use `ls -G` and the other `-G`-style flags.
+
+/// `alias [name[=value] ...]`, `alias -p`, or bare `alias`.
+fn alias(exec: &mut Executor, args: &[String]) -> Result<ProcStatus, String> {
+    let mut i = 1;
+    if args.get(1).is_some_and(|a| a == "-p") {
+        i = 2;
+    }
+    if i >= args.len() {
+        for (name, value) in &exec.aliases {
+            print_alias(name, value);
+        }
+        return Ok(ProcStatus::Exit(0));
+    }
+    for arg in &args[i..] {
+        match arg.find('=') {
+            Some(eq) => {
+                let name = &arg[..eq];
+                let value = &arg[eq + 1..];
+                exec.aliases.insert(name.to_owned(), value.to_owned());
+            }
+            None => match exec.aliases.get(arg) {
+                Some(value) => print_alias(arg, value),
+                None => return Err(alloc::format!("cake: alias: {arg}: not found")),
+            },
+        }
+    }
+    Ok(ProcStatus::Exit(0))
+}
+
+/// `unalias name...` or `unalias -a`.
+fn unalias(exec: &mut Executor, args: &[String]) -> Result<ProcStatus, String> {
+    if args.get(1).is_some_and(|a| a == "-a") {
+        exec.aliases.clear();
+        return Ok(ProcStatus::Exit(0));
+    }
+    for name in &args[1..] {
+        if exec.aliases.remove(name).is_none() {
+            return Err(alloc::format!("cake: unalias: {name}: not found"));
+        }
+    }
+    Ok(ProcStatus::Exit(0))
+}
+
+fn print_alias(name: &str, value: &str) {
+    out(&alloc::format!("alias {name}='{}'\n", quote_single(value)));
+}
+
+/// Quote `s` for a single-quoted shell word (escaping `'` as `'\''`).
+fn quote_single(s: &str) -> String {
+    let mut out = String::new();
+    for c in s.chars() {
+        if c == '\'' {
+            out.push_str("'\\''");
+        } else {
+            out.push(c);
+        }
+    }
+    out
 }
 
 // --- type ---
@@ -411,16 +497,15 @@ fn readonly(exec: &mut Executor, args: &[String]) -> Result<ProcStatus, String> 
                     .set(name, EnvVar::new(val).set_flags(EnvVarFlags::READONLY))
                     .map_err(|e| alloc::format!("cake: readonly: {e}"))?;
             }
-            None => match exec.env.get(arg) {
-                Some(var) => {
+            None => {
+                if let Some(var) = exec.env.get(arg) {
                     let mut flags = var.flags();
                     flags.insert(EnvVarFlags::READONLY);
                     exec.env
                         .set(arg, var.set_flags(flags))
                         .map_err(|e| alloc::format!("cake: readonly: {e}"))?;
                 }
-                None => {}
-            },
+            }
         }
     }
     Ok(ProcStatus::Exit(0))
@@ -450,7 +535,7 @@ pub fn is_builtin(name: &str) -> bool {
     matches!(
         name,
         "echo" | "printf" | "true" | ":" | "false" | "exit" | "cd" | "pwd" | "type"
-            | "export" | "unset" | "readonly" | "shift" | "command"
+            | "export" | "unset" | "readonly" | "shift" | "command" | "alias" | "unalias"
     )
 }
 
@@ -458,6 +543,60 @@ pub fn is_builtin(name: &str) -> bool {
 pub fn builtin_names() -> &'static [&'static str] {
     &[
         "echo", "printf", "true", ":", "false", "exit", "cd", "pwd", "type", "export",
-        "unset", "readonly", "shift", "command",
+        "unset", "readonly", "shift", "command", "alias", "unalias",
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::executor::Executor;
+    use cake_env::EnvStack;
+
+    #[test]
+    fn alias_defines() {
+        let mut exec = Executor::new(EnvStack::new());
+        let r = alias(&mut exec, &["alias".into(), "ls=ls --color=auto".into()]).unwrap();
+        assert_eq!(r, ProcStatus::Exit(0));
+        assert_eq!(exec.aliases.get("ls").map(String::as_str), Some("ls --color=auto"));
+    }
+
+    #[test]
+    fn alias_query_missing_errors() {
+        let mut exec = Executor::new(EnvStack::new());
+        let r = alias(&mut exec, &["alias".into(), "nope".into()]);
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn unalias_removes() {
+        let mut exec = Executor::new(EnvStack::new());
+        exec.aliases.insert("ls".into(), "ls --color=auto".into());
+        let r = unalias(&mut exec, &["unalias".into(), "ls".into()]).unwrap();
+        assert_eq!(r, ProcStatus::Exit(0));
+        assert!(exec.aliases.is_empty());
+    }
+
+    #[test]
+    fn unalias_missing_errors() {
+        let mut exec = Executor::new(EnvStack::new());
+        let r = unalias(&mut exec, &["unalias".into(), "nope".into()]);
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn unalias_dash_a_clears_all() {
+        let mut exec = Executor::new(EnvStack::new());
+        exec.aliases.insert("ls".into(), "ls --color=auto".into());
+        exec.aliases.insert("grep".into(), "grep --color=auto".into());
+        let r = unalias(&mut exec, &["unalias".into(), "-a".into()]).unwrap();
+        assert_eq!(r, ProcStatus::Exit(0));
+        assert!(exec.aliases.is_empty());
+    }
+
+    #[test]
+    fn quote_single_escapes_embedded_quotes() {
+        assert_eq!(quote_single("it's"), "it'\\''s");
+        assert_eq!(quote_single("plain"), "plain");
+    }
 }

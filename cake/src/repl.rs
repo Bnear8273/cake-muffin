@@ -35,7 +35,15 @@ struct CakeHelper {
 
 impl Highlighter for CakeHelper {
     fn highlight<'l>(&self, line: &'l str, _pos: usize) -> Cow<'l, str> {
-        Cow::Owned(cake_highlight::highlight_line(line))
+        let exec = self.exec.borrow();
+        let found = |name: &str| {
+            exec.aliases.contains_key(name)
+                || !matches!(
+                    cake_exec::resolve::resolve_command(&exec, name),
+                    cake_exec::resolve::CommandSpec::NotFound
+                )
+        };
+        Cow::Owned(cake_highlight::highlight_line(line, &found))
     }
     fn highlight_char(&self, _line: &str, _pos: usize, _kind: rustyline::highlight::CmdKind) -> bool {
         true
@@ -65,8 +73,18 @@ impl Hinter for CakeHelper {
         if pos != line.len() {
             return None;
         }
+        let exec = self.exec.borrow();
         let h = self.history.borrow();
-        cake_reader::suggest(line, &h)
+        // Skip history entries whose leading command is known-bad.
+        let filtered: Vec<String> = h
+            .iter()
+            .filter(|entry| {
+                let first = entry.split_whitespace().next().unwrap_or("");
+                !exec.blacklist.contains(first)
+            })
+            .cloned()
+            .collect();
+        cake_reader::suggest(line, &filtered)
     }
 }
 
@@ -92,6 +110,9 @@ fn complete_in(exec: &Executor, line: &str, pos: usize) -> (usize, Vec<Pair>) {
             for f in exec.functions.keys() {
                 cands.push(f.clone());
             }
+            for a in exec.aliases.keys() {
+                cands.push(a.clone());
+            }
             if let Some(pathvar) = exec.env.get("PATH") {
                 for dir in pathvar.values() {
                     if let Ok(rd) = std::fs::read_dir(dir) {
@@ -112,6 +133,10 @@ fn complete_in(exec: &Executor, line: &str, pos: usize) -> (usize, Vec<Pair>) {
                     }
                 }
             }
+            let cands: Vec<String> = cands
+                .into_iter()
+                .filter(|c| !exec.blacklist.contains(c))
+                .collect();
             let matches = dedup(cake_complete::filter_candidates(word, &cands));
             let pairs = matches
                 .into_iter()
@@ -123,19 +148,22 @@ fn complete_in(exec: &Executor, line: &str, pos: usize) -> (usize, Vec<Pair>) {
             (word_start, pairs)
         }
         CompleteKind::File => {
-            // Split the word into (dir, base) around the last `/`.
-            let (dir, base, dir_prefix) = match word.rfind('/') {
-                Some(0) => ("/", &word[1..], "/"),
-                Some(i) => (&word[..i], &word[i + 1..], &word[..=i]),
-                None => (".", word, ""),
+            // Split the word into (dir, base) around the last path separator.
+            let sep = cake_platform::get().path_separator();
+            let (dir, base, dir_prefix) = match word.rfind(|c| cake_platform::get().is_path_separator(c)) {
+                Some(0) => {
+                    (sep.to_string(), &word[1..], sep.to_string())
+                }
+                Some(i) => (word[..i].to_string(), &word[i + 1..], word[..=i].to_string()),
+                None => (String::from("."), word, String::new()),
             };
             let mut cands: Vec<String> = Vec::new();
-            if let Ok(rd) = std::fs::read_dir(dir) {
+            if let Ok(rd) = std::fs::read_dir(&dir) {
                 for e in rd.flatten() {
                     let name = e.file_name().to_string_lossy().into_owned();
                     let full = e.path().to_string_lossy().into_owned();
                     if cake_platform::get().stat(&full).is_dir {
-                        cands.push(format!("{name}/"));
+                        cands.push(format!("{name}{sep}"));
                     } else {
                         cands.push(name);
                     }
@@ -152,7 +180,8 @@ fn complete_in(exec: &Executor, line: &str, pos: usize) -> (usize, Vec<Pair>) {
             (word_start, pairs)
         }
         CompleteKind::Variable => {
-            let prefix = word.strip_prefix('$').unwrap_or(word);
+            let dollar = cake_complete::dollar_in_word(word).unwrap_or(0);
+            let prefix = word[dollar + 1..].trim_end_matches(['"', '\'']);
             let names: Vec<String> = exec.env.get_names().iter().map(|n| n.to_string()).collect();
             let matches = dedup(cake_complete::filter_candidates(prefix, &names));
             let pairs = matches
@@ -162,8 +191,9 @@ fn complete_in(exec: &Executor, line: &str, pos: usize) -> (usize, Vec<Pair>) {
                     replacement: c,
                 })
                 .collect();
-            // Keep the leading `$` in the line; replace only the name part.
-            (word_start + 1, pairs)
+            // Keep the leading `$` (and anything before it) in the line;
+            // replace only the name part.
+            (word_start + dollar + 1, pairs)
         }
     }
 }
@@ -185,6 +215,10 @@ pub fn run_interactive() -> ! {
     {
         let mut exec = executor.borrow_mut();
         exec.shell_pid = std::process::id() as i32;
+        // Aliases expand in interactive shells (bash expands them in `-c`
+        // scripts only when `shopt -s expand_aliases` is set, which cake
+        // doesn't do).
+        exec.expand_aliases = true;
         load_blacklist(&mut exec);
     }
 
@@ -218,13 +252,21 @@ pub fn run_interactive() -> ! {
     if let Some(path) = history_path() {
         let _ = editor.load_history(&path);
     }
+    // Seed the suggestion history from the persisted history so that
+    // autosuggestions work across sessions.
+    {
+        let mut h = helper_hist.borrow_mut();
+        for entry in editor.history().iter() {
+            h.push(entry.clone());
+        }
+    }
 
     let mut buffer = String::new();
     loop {
         buffer.clear();
         let mut prompt = {
             let exec = executor.borrow();
-            ps(&exec, "PS1", "$ ")
+            prompt1(&exec)
         };
         loop {
             match editor.readline(&prompt) {
@@ -244,7 +286,7 @@ pub fn run_interactive() -> ! {
                     buffer.clear();
                     prompt = {
                         let exec = executor.borrow();
-                        ps(&exec, "PS1", "$ ")
+                        prompt1(&exec)
                     };
                     continue;
                 }
@@ -254,7 +296,7 @@ pub fn run_interactive() -> ! {
                     buffer.clear();
                     prompt = {
                         let exec = executor.borrow();
-                        ps(&exec, "PS1", "$ ")
+                        prompt1(&exec)
                     };
                     continue;
                 }
@@ -329,6 +371,37 @@ fn ps(exec: &Executor, name: &str, default: &str) -> String {
         .map(|v| v.value().to_owned())
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| default.to_owned())
+}
+
+/// The primary prompt: an explicit `PS1` wins, otherwise the current path
+/// (abbreviated to `~` under `$HOME`), falling back to `$ ` without `PWD`.
+fn prompt1(exec: &Executor) -> String {
+    if let Some(ps1) = exec
+        .env
+        .get("PS1")
+        .filter(|v| !v.value().is_empty())
+    {
+        return ps1.value().to_owned();
+    }
+    match exec.env.get("PWD") {
+        Some(pwd) if !pwd.value().is_empty() => {
+            let pwd = pwd.value();
+            match exec.env.get("HOME") {
+                Some(home) if !home.value().is_empty() => {
+                    if let Some(rest) = pwd.strip_prefix(home.value()) {
+                        return if rest.is_empty() {
+                            "~ ".to_owned()
+                        } else {
+                            format!("~{rest} ")
+                        };
+                    }
+                }
+                _ => {}
+            }
+            format!("{pwd} ")
+        }
+        _ => "$ ".to_owned(),
+    }
 }
 
 fn data_dir() -> PathBuf {

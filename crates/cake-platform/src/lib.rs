@@ -17,53 +17,37 @@ pub type Fd = i32;
 #[cfg(not(unix))]
 pub type Fd = usize;
 
-/// A signal number.
+/// A signal, by symbolic name (not by platform-specific number).
+///
+/// Shell code refers to signals symbolically; the platform backend owns the
+/// mapping to raw numbers ([`Platform::signal_number`]), because those
+/// numbers differ between Linux and the BSDs/macOS (e.g. `SIGUSR1` is 10 on
+/// Linux but 30 on macOS).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Signal {
+    /// `SIGINT` — interactive interrupt (Ctrl-C).
     Interrupt,
+    /// `SIGQUIT` — keyboard quit (Ctrl-\).
     Quit,
+    /// `SIGTERM` — termination.
     Terminate,
+    /// `SIGCHLD` — child stopped or terminated.
     Child,
+    /// `SIGCONT` — continue a stopped process.
     Continue,
-    Stop,
+    /// `SIGTSTP` — keyboard stop (Ctrl-Z).
+    Tstp,
+    /// `SIGWINCH` — window size change.
     WindowChange,
+    /// `SIGUSR1` — application-defined.
     User1,
+    /// `SIGUSR2` — application-defined.
     User2,
     /// Any other signal by its raw number.
     Other(i32),
 }
 
 impl Signal {
-    pub fn number(self) -> i32 {
-        match self {
-            Signal::Interrupt => 2,
-            Signal::Quit => 3,
-            Signal::Terminate => 15,
-            Signal::Child => 17,
-            Signal::Continue => 18,
-            Signal::Stop => 19,
-            Signal::WindowChange => 28,
-            Signal::User1 => 10,
-            Signal::User2 => 12,
-            Signal::Other(n) => n,
-        }
-    }
-
-    pub fn from_number(n: i32) -> Self {
-        match n {
-            2 => Signal::Interrupt,
-            3 => Signal::Quit,
-            10 => Signal::User1,
-            12 => Signal::User2,
-            15 => Signal::Terminate,
-            17 => Signal::Child,
-            18 => Signal::Continue,
-            19 => Signal::Stop,
-            28 => Signal::WindowChange,
-            _ => Signal::Other(n),
-        }
-    }
-
     pub fn name(self) -> &'static str {
         match self {
             Signal::Interrupt => "SIGINT",
@@ -71,7 +55,7 @@ impl Signal {
             Signal::Terminate => "SIGTERM",
             Signal::Child => "SIGCHLD",
             Signal::Continue => "SIGCONT",
-            Signal::Stop => "SIGTSTP",
+            Signal::Tstp => "SIGTSTP",
             Signal::WindowChange => "SIGWINCH",
             Signal::User1 => "SIGUSR1",
             Signal::User2 => "SIGUSR2",
@@ -322,6 +306,14 @@ pub trait Platform: Sync {
         sig: Signal,
         handler: extern "C" fn(i32),
     ) -> Result<(), PlatformError>;
+    /// Map a symbolic signal to the platform's raw signal number.
+    ///
+    /// Numbers are platform-specific (e.g. `SIGUSR1` is 10 on Linux but 30 on
+    /// macOS/BSD), so the backend owns the mapping.
+    fn signal_number(&self, sig: Signal) -> i32;
+    /// Map a raw signal number back to a symbolic signal; unknown numbers
+    /// become [`Signal::Other`].
+    fn signal_from_number(&self, n: i32) -> Signal;
     /// Block the given signals, returning the previous mask so callers can
     /// restore it with `unblock_signals`.
     fn block_signals(&self, sigs: &[Signal]) -> Result<SignalMask, PlatformError>;
@@ -345,10 +337,29 @@ pub trait Platform: Sync {
     fn read(&self, fd: Fd, buf: &mut [u8]) -> Result<usize, PlatformError>;
 
     // --- Subprocess ---
-    /// Fork and run `f` in the child process. The child calls `_exit(f())`.
+    /// Run `f` in a child process. The child calls `_exit(f())`.
+    ///
+    /// # Portability
+    ///
+    /// The Unix backend implements this with `fork()`, which snapshots the
+    /// whole process (heap, open fds, signals) and lets the child continue
+    /// running arbitrary shell code in-place. Windows has no `fork`; a future
+    /// Windows backend must implement this differently (e.g. spawn a fresh
+    /// `cake -c <script>` process and wire up stdin/stdout/stderr), so callers
+    /// should keep the closure free of non-serializable state.
     fn run_in_child(&self, f: &mut dyn FnMut() -> i32) -> Result<ProcessHandle, ProcessError>;
 
     // --- FS ---
+    /// The platform's null device path (`/dev/null` on Unix, `NUL` on
+    /// Windows).
+    fn null_device(&self) -> &'static str;
+    /// The platform's preferred path separator (`/` on Unix, `\` on Windows).
+    fn path_separator(&self) -> char;
+    /// Whether `c` is accepted as a path separator. Defaults to accepting
+    /// both `/` and `\` (Windows accepts both).
+    fn is_path_separator(&self, c: char) -> bool {
+        c == '/' || c == '\\'
+    }
     fn is_executable(&self, path: &str) -> bool;
     /// Filesystem facts for test operators.
     fn stat(&self, path: &str) -> FileInfo;

@@ -2,13 +2,14 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 /// The exit status of a process.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ProcStatus {
     /// The process exited with the given code.
     Exit(i32),
     /// The process was terminated by the given signal.
     Signal(i32),
     /// The process has not started (or was never a real process).
+    #[default]
     NotStarted,
     /// The job was cancelled (e.g. by SIGINT).
     Cancelled,
@@ -44,12 +45,6 @@ impl ProcStatus {
             ProcStatus::NotStarted => 0,
             ProcStatus::Cancelled => 130, // 128 + SIGINT
         }
-    }
-}
-
-impl Default for ProcStatus {
-    fn default() -> Self {
-        ProcStatus::NotStarted
     }
 }
 
