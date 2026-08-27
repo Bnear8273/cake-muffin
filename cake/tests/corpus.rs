@@ -18,6 +18,9 @@ struct ShellResult {
 fn run(cmd: &str, args: &[&str], input: &str) -> ShellResult {
     let out: Output = Command::new(cmd)
         .args(args)
+        // A fixed locale keeps job-status words ("Running") identical.
+        .env("LANG", "C")
+        .env("LC_ALL", "C")
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())

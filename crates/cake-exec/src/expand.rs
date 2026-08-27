@@ -35,6 +35,8 @@ pub struct ExpandCtx<'a> {
     pub shopt: crate::executor::ShoptBits,
     /// `set -e`: propagate to command-substitution sub-shells.
     pub errexit: bool,
+    /// Pid of the most recent background job (`$!`).
+    pub last_bg_pid: i32,
 }
 
 /// The characters that make up IFS by default when IFS is unset.
@@ -475,6 +477,9 @@ fn expand_parameter(ctx: &mut ExpandCtx, p: &Parameter, in_dquotes: bool) -> Res
             });
         }
         "0" => return Ok(PartOut::Append(ctx.shell_name().to_owned())),
+        "!" => {
+            return Ok(PartOut::Append(ctx.last_bg_pid.to_string()));
+        }
         _ => {}
     }
 
@@ -1159,6 +1164,7 @@ mod tests {
             errexit: false,
             noglob: false,
             shopt: crate::executor::ShoptBits::default(),
+            last_bg_pid: 0,
         };
         expand_word(&mut ctx, &word).unwrap()
     }

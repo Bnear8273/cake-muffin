@@ -215,6 +215,7 @@ pub fn run_interactive() -> ! {
     {
         let mut exec = executor.borrow_mut();
         exec.shell_pid = std::process::id() as i32;
+        exec.interactive = true;
         // Aliases expand in interactive shells (bash expands them in `-c`
         // scripts only when `shopt -s expand_aliases` is set, which cake
         // doesn't do).

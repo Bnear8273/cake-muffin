@@ -142,8 +142,8 @@ impl Platform for UnixPlatform {
                 Ok(WaitStatus::Stopped(self.signal_from_number(sig as i32)))
             }
             Ok(nix::sys::wait::WaitStatus::Continued(_)) => Ok(WaitStatus::Continued),
-            Ok(_) => Ok(WaitStatus::Exited(0)),
-            Err(nix::errno::Errno::ECHILD) => Ok(WaitStatus::Exited(127)),
+            Ok(nix::sys::wait::WaitStatus::StillAlive) => Ok(WaitStatus::StillAlive),
+            Ok(_) => Ok(WaitStatus::Exited(127)),
             Err(err) => Err(ProcessError::Other(format!("waitpid failed: {err}"))),
         }
     }

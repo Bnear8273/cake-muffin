@@ -71,6 +71,8 @@ pub enum WaitStatus {
     Signaled(Signal),
     Stopped(Signal),
     Continued,
+    /// The child has not exited yet (only with `NOHANG`).
+    StillAlive,
 }
 
 /// Opaque signal mask, for `block_signals`/`unblock_signals`.

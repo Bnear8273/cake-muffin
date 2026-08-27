@@ -40,6 +40,10 @@ pub fn run_builtin(exec: &mut Executor, name: &str, args: &[String]) -> Option<R
         "set" => set_(exec, args),
         "shopt" => shopt(exec, args),
         "trap" => trap(exec, args),
+        "jobs" => jobs(exec, args),
+        "wait" => wait(exec, args),
+        "fg" => fg_bg(exec, args, true),
+        "bg" => fg_bg(exec, args, false),
         _ => return None,
     })
 }
@@ -855,7 +859,105 @@ fn is_identifier(s: &str) -> bool {
     chars.all(|c| c == '_' || c.is_ascii_alphanumeric())
 }
 
-// --- set ---
+// --- jobs ---
+
+/// `jobs [-l]` — list background jobs.
+fn jobs(exec: &mut Executor, args: &[String]) -> Result<ProcStatus, String> {
+    let mut long = false;
+    for a in &args[1..] {
+        match a.as_str() {
+            "-l" => long = true,
+            "-p" | "-n" | "-r" | "-s" | "-x" => {}
+            other if other.starts_with('-') => {
+                return Err(alloc::format!("cake: jobs: invalid option `{other}`"))
+            }
+            _ => return Err(alloc::format!("cake: jobs: no job name `{a}`")),
+        }
+    }
+    exec.reap_background();
+    let n = exec.background.len();
+    let mut buf = String::new();
+    for (i, job) in exec.background.iter().enumerate() {
+        let flag = if i == n - 1 {
+            '+'
+        } else if i == n - 2 {
+            '-'
+        } else {
+            ' '
+        };
+        let status = match job.status {
+            Some(_) => "Done",
+            None => "Running",
+        };
+        let mut line = if long {
+            alloc::format!("[{}]{} {} {:<27}", job.job_id, flag, job.handle.pid(), status)
+        } else {
+            alloc::format!("[{}]{}  {:<27}", job.job_id, flag, status)
+        };
+        line.push_str(&job.cmd);
+        if job.status.is_none() {
+            line.push_str(" &");
+        }
+        line.push('\n');
+        buf.push_str(&line);
+    }
+    out(&buf);
+    // Done jobs are shown once, then dropped (bash behaviour).
+    exec.background.retain(|j| j.status.is_none());
+    Ok(ProcStatus::Exit(0))
+}
+
+// --- wait ---
+
+/// `wait [pid ...]` — wait for background jobs.
+fn wait(exec: &mut Executor, args: &[String]) -> Result<ProcStatus, String> {
+    if args.len() <= 1 {
+        // Wait for everything; the status is 0 unless a signal interrupted.
+        let handles: Vec<cake_platform::ProcessHandle> = exec
+            .background
+            .iter()
+            .filter(|j| j.status.is_none())
+            .map(|j| j.handle)
+            .collect();
+        for h in &handles {
+            let st = exec.wait_for(h);
+            if let Some(job) = exec.background.iter_mut().find(|j| j.handle.pid() == h.pid()) {
+                job.status = Some(st);
+            }
+        }
+        exec.background.clear();
+        return Ok(ProcStatus::Exit(0));
+    }
+    let mut last = ProcStatus::Exit(0);
+    for pid_arg in &args[1..] {
+        let Ok(pid) = pid_arg.parse::<i32>() else {
+            return Err(alloc::format!("cake: wait: `{pid_arg}`: not a pid"));
+        };
+        match exec.reap_job(pid) {
+            Some(st) => last = st,
+            None => return Err(alloc::format!("cake: wait: pid {pid} is not a child of this shell")),
+        }
+    }
+    Ok(last)
+}
+
+// --- fg / bg ---
+
+/// `fg` / `bg` — foreground/resume a background job.
+///
+/// cake has no terminal job control yet, so like non-interactive bash these
+/// report "no job control" (exit 1).
+fn fg_bg(exec: &mut Executor, args: &[String], _is_fg: bool) -> Result<ProcStatus, String> {
+    if exec.interactive {
+        return Err(alloc::format!(
+            "cake: {}: job control not implemented yet",
+            args[0]
+        ));
+    }
+    Err(alloc::format!("cake: {}: no job control", args[0]))
+}
+
+
 
 /// `set [-euf] [+euf] [-o opt] [+o opt] [--] [arg...]` and bare `set`.
 fn set_(exec: &mut Executor, args: &[String]) -> Result<ProcStatus, String> {
@@ -1148,7 +1250,7 @@ pub fn is_builtin(name: &str) -> bool {
         "echo" | "printf" | "true" | ":" | "false" | "exit" | "cd" | "pwd" | "type"
             | "export" | "unset" | "readonly" | "shift" | "command" | "alias" | "unalias"
             | "test" | "[" | "break" | "continue" | "return" | "source" | "." | "read"
-            | "set" | "shopt" | "trap"
+            | "set" | "shopt" | "trap" | "jobs" | "wait" | "fg" | "bg"
     )
 }
 
@@ -1158,6 +1260,7 @@ pub fn builtin_names() -> &'static [&'static str] {
         "echo", "printf", "true", ":", "false", "exit", "cd", "pwd", "type", "export",
         "unset", "readonly", "shift", "command", "alias", "unalias", "test", "[", "break",
         "continue", "return", "source", ".", "read", "set", "shopt", "trap",
+        "jobs", "wait", "fg", "bg",
     ]
 }
 

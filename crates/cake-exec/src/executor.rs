@@ -49,6 +49,76 @@ pub(crate) struct LoopControl {
     pub(crate) depth: u32,
 }
 
+/// A background job tracked by the shell (`jobs`/`wait`/`$!`).
+#[derive(Debug, Clone)]
+pub(crate) struct JobEntry {
+    pub(crate) job_id: usize,
+    pub(crate) handle: ProcessHandle,
+    /// Textual form of the command, for `jobs` output.
+    pub(crate) cmd: String,
+    /// `Some` once the job has finished.
+    pub(crate) status: Option<ProcStatus>,
+}
+
+/// Rebuild the original text of a word from its parts (for `jobs` output).
+pub(crate) fn word_text(w: &cake_syntax::Word) -> String {
+    use cake_syntax::WordPart;
+    let mut s = String::new();
+    for part in &w.parts {
+        match part {
+            WordPart::Literal(t, _) => s.push_str(t),
+            WordPart::SingleQuoted(t, _) => {
+                s.push('\'');
+                s.push_str(t);
+                s.push('\'');
+            }
+            WordPart::AnsiCQuoted(t, _) => {
+                s.push_str("$'");
+                s.push_str(t);
+                s.push('\'');
+            }
+            WordPart::DoubleQuoted(parts, _) => {
+                s.push('"');
+                for p in parts {
+                    s.push_str(&part_text(p));
+                }
+                s.push('"');
+            }
+            WordPart::Parameter(p, _) => s.push_str(&p.text),
+            WordPart::CommandSubst(t, _) => {
+                s.push_str("$(");
+                s.push_str(t);
+                s.push(')');
+            }
+            WordPart::ArithExpansion(t, _) => {
+                s.push_str("$((");
+                s.push_str(t);
+                s.push_str("))");
+            }
+            WordPart::Tilde(t, _) | WordPart::Brace(t, _) | WordPart::ProcessSubst(t, _) => {
+                s.push_str(t)
+            }
+        }
+    }
+    s
+}
+
+fn part_text(p: &cake_syntax::WordPart) -> String {
+    match p {
+        cake_syntax::WordPart::DoubleQuoted(parts, _) => {
+            let mut s = String::new();
+            for inner in parts {
+                s.push_str(&part_text(inner));
+            }
+            s
+        }
+        _ => word_text(&cake_syntax::Word {
+            parts: alloc::vec![p.clone()],
+            span: cake_syntax::Span::new(0, 0),
+        }),
+    }
+}
+
 /// What a `trap` entry reacts to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrapTrigger {
@@ -94,8 +164,14 @@ pub struct Executor {
     pub(crate) fn_depth: usize,
     /// The shell's own pid (`$$`). Set by the driver.
     pub shell_pid: i32,
-    /// Pids of background jobs not yet reaped.
-    background: Vec<ProcessHandle>,
+    /// Background jobs not yet finished (`jobs`/`wait`/`$!`).
+    pub(crate) background: Vec<JobEntry>,
+    /// Monotonic job counter for `[n]` job ids.
+    next_job_id: usize,
+    /// Pid of the most recent background job (`$!`).
+    pub last_bg_pid: i32,
+    /// Whether this shell is interactive (affects `fg`/`bg` error text).
+    pub interactive: bool,
     /// Commands that were not found (persisted by the driver).
     pub blacklist: CommandBlacklist,
     /// `set -e`: exit on a failing simple command (outside exempt contexts).
@@ -134,6 +210,9 @@ impl Executor {
             fn_depth: 0,
             shell_pid: 0,
             background: Vec::new(),
+            next_job_id: 1,
+            last_bg_pid: 0,
+            interactive: false,
             blacklist: CommandBlacklist::new(),
             errexit: false,
             nounset: false,
@@ -162,14 +241,30 @@ impl Executor {
         self.exit_requested.take()
     }
 
-    /// Reap any exited background jobs, removing them from the list.
+    /// Reap any exited background jobs, recording their status.
     pub fn reap_background(&mut self) {
-        self.background.retain(|h| {
-            matches!(
-                cake_platform::get().wait(h, WaitOptions::NOHANG),
-                Ok(WaitStatus::Stopped(_)) | Err(_)
-            )
-        });
+        for job in &mut self.background {
+            if job.status.is_some() {
+                continue;
+            }
+            if let Ok(WaitStatus::Exited(code)) =
+                cake_platform::get().wait(&job.handle, WaitOptions::NOHANG)
+            {
+                job.status = Some(ProcStatus::Exit(code as i32));
+            }
+        }
+    }
+
+    /// Reap a specific background job, returning its final status.
+    pub fn reap_job(&mut self, pid: i32) -> Option<ProcStatus> {
+        let idx = self.background.iter().position(|j| j.handle.pid() == pid)?;
+        let handle = self.background[idx].handle;
+        let status = match self.background[idx].status {
+            Some(s) => s,
+            None => self.wait_for(&handle),
+        };
+        self.background.remove(idx);
+        Some(status)
     }
 
     // --- entry point -----------------------------------------------------
@@ -379,6 +474,9 @@ impl Executor {
     /// doc on [`Platform::run_in_child`]).
     fn eval_and_or_background(&mut self, aol: &AndOrList) -> ProcStatus {
         let list = aol.clone();
+        let cmd_text = self.and_or_to_text(aol);
+        let job_id = self.next_job_id;
+        self.next_job_id += 1;
         let exec = &mut *self as *mut Executor;
         let result = cake_platform::get().run_in_child(&mut move || {
             let exec = unsafe { &mut *exec };
@@ -392,8 +490,85 @@ impl Executor {
             exec.run_exit_traps_except(&inherited);
             st
         });
-        result.ok();
+        if let Ok(h) = result {
+            self.background.push(JobEntry {
+                job_id,
+                handle: h,
+                cmd: cmd_text,
+                status: None,
+            });
+            self.last_bg_pid = h.pid();
+        }
         ProcStatus::Exit(0)
+    }
+
+    /// Rebuild a short textual form of the command for `jobs` output.
+    fn and_or_to_text(&self, aol: &AndOrList) -> String {
+        let mut s = String::new();
+        for (i, cmd) in aol.first.commands.iter().enumerate() {
+            if i > 0 {
+                s.push('|');
+            }
+            s.push_str(&self.command_to_text(cmd));
+        }
+        s
+    }
+
+    fn command_to_text(&self, cmd: &Command) -> String {
+        use cake_syntax::{AssignmentValue, RedirectTarget};
+        match &cmd.kind {
+            CommandKind::Simple(sc) => {
+                let mut parts: Vec<String> = Vec::new();
+                for a in &sc.assignments {
+                    parts.push(alloc::format!(
+                        "{}{}",
+                        a.name,
+                        match &a.value {
+                            AssignmentValue::Word(w) => word_text(w),
+                            AssignmentValue::Array(ws) => {
+                                let inner: Vec<String> = ws.iter().map(word_text).collect();
+                                alloc::format!("({})", inner.join(" "))
+                            }
+                            AssignmentValue::Index { index, value } => {
+                                alloc::format!("[{}]{}", word_text(index), word_text(value))
+                            }
+                        }
+                    ));
+                }
+                for w in &sc.words {
+                    parts.push(word_text(w));
+                }
+                for r in &cmd.redirects {
+                    let mut redir = String::new();
+                    if let Some(fd) = r.fd {
+                        redir.push_str(&alloc::string::ToString::to_string(&fd));
+                    }
+                    redir.push_str(match r.kind {
+                        cake_syntax::RedirectKind::Write => ">",
+                        cake_syntax::RedirectKind::Append => ">>",
+                        cake_syntax::RedirectKind::Read => "<",
+                        cake_syntax::RedirectKind::ReadWrite => "<>",
+                        cake_syntax::RedirectKind::DupInput => "<&",
+                        cake_syntax::RedirectKind::DupOutput => ">&",
+                        cake_syntax::RedirectKind::Heredoc => "<<",
+                        cake_syntax::RedirectKind::HereString => "<<<",
+                        cake_syntax::RedirectKind::Clobber => ">|",
+                        cake_syntax::RedirectKind::AndOut => "&>",
+                        cake_syntax::RedirectKind::AndAppend => "&>>",
+                    });
+                    match &r.target {
+                        RedirectTarget::Word(w) => redir.push_str(&word_text(w)),
+                        RedirectTarget::Fd(n) => redir.push_str(&alloc::string::ToString::to_string(n)),
+                        RedirectTarget::Close => redir.push('-'),
+                        RedirectTarget::HereString(w) => redir.push_str(&word_text(w)),
+                        RedirectTarget::Heredoc { .. } => {}
+                    }
+                    parts.push(redir);
+                }
+                parts.join(" ")
+            }
+            _ => "?".into(),
+        }
     }
 
     // --- pipelines -------------------------------------------------------
@@ -750,7 +925,7 @@ impl Executor {
         Ok(EvalResult::Spawned(handle))
     }
 
-    fn wait_for(&mut self, handle: &ProcessHandle) -> ProcStatus {
+    pub(crate) fn wait_for(&mut self, handle: &ProcessHandle) -> ProcStatus {
         match cake_platform::get().wait(handle, WaitOptions::NONE) {
             Ok(WaitStatus::Exited(code)) => ProcStatus::Exit(code as i32),
             Ok(WaitStatus::Signaled(sig)) => {
@@ -897,6 +1072,7 @@ impl Executor {
             noglob: self.noglob,
             shopt: self.shopt,
             errexit: self.errexit,
+            last_bg_pid: self.last_bg_pid,
         }
     }
 
