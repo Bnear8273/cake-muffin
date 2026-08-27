@@ -340,7 +340,13 @@ impl<'a> Lexer<'a> {
         let c = self.advance().unwrap();
         let kind = match c {
             '<' => {
-                if self.peek() == Some('<') {
+                if self.peek() == Some('(') {
+                    // Process substitution `<(cmd)`: consume to the matching
+                    // `)` and yield the whole thing as one word.
+                    self.advance(); // (
+                    self.skip_command_subst_after_open()?;
+                    return Ok(self.mk(TokenKind::Word, start));
+                } else if self.peek() == Some('<') {
                     self.advance();
                     if self.peek() == Some('<') {
                         self.advance(); // <<<
@@ -368,7 +374,12 @@ impl<'a> Lexer<'a> {
                 }
             }
             '>' => {
-                if self.peek() == Some('>') {
+                if self.peek() == Some('(') {
+                    // Process substitution `>(cmd)`.
+                    self.advance(); // (
+                    self.skip_command_subst_after_open()?;
+                    return Ok(self.mk(TokenKind::Word, start));
+                } else if self.peek() == Some('>') {
                     self.advance();
                     if self.peek() == Some('&') {
                         self.advance(); // >>&
@@ -411,6 +422,13 @@ impl<'a> Lexer<'a> {
 
             // End of word: unquoted metachar at top level.
             if !in_dquote && is_metachar(c) {
+                // `<(cmd)` / `>(cmd)` process substitution stays in the word.
+                if (c == '<' || c == '>') && self.rest()[1..].starts_with('(') {
+                    self.advance(); // < or >
+                    self.advance(); // (
+                    self.skip_command_subst_after_open()?;
+                    continue;
+                }
                 break;
             }
             // `(` and `)` are always word terminators in bash (they are

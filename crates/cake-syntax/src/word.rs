@@ -188,6 +188,26 @@ fn scan(text: &str, base: Offset, in_dquotes: bool) -> Vec<WordPart> {
                 ));
                 i = j;
             }
+            '<' | '>' => {
+                // Process substitution `<(cmd)` / `>(cmd)`: scan to the
+                // matching `)`. Inside double quotes it is literal (bash).
+                if !in_dquotes && i + 1 < n && text[i + 1..].starts_with('(')
+                    && let Some(close) = find_paren(text, i + 1)
+                {
+                    flush_lit!();
+                    parts.push(WordPart::ProcessSubst(
+                        text[i..=close].to_owned(),
+                        Span::new(base + i as Offset, base + close as Offset + 1),
+                    ));
+                    i = close + 1;
+                    continue;
+                }
+                if lit.is_empty() {
+                    lit_start = i as Offset;
+                }
+                lit.push(c);
+                i += 1;
+            }
             '{' => {
                 // Possible brace expansion; only treated specially when a
                 // matching `}` exists (rough check for M1).
@@ -632,6 +652,58 @@ fn find_brace(text: &str, start: usize) -> Option<usize> {
                     return Some(i);
                 }
             }
+            '\\' => {
+                i += c.len_utf8();
+                if i < text.len() {
+                    i += text[i..].chars().next().unwrap().len_utf8();
+                }
+                continue;
+            }
+            _ => {}
+        }
+        i += c.len_utf8();
+    }
+    None
+}
+
+/// Find the `)` matching the `(` at `start`, honouring quotes and nested
+/// `$()`/`$((...))`/`<(...)` groups (for process substitution).
+fn find_paren(text: &str, start: usize) -> Option<usize> {
+    let mut depth: i32 = 1;
+    let mut i = start + 1;
+    let mut in_dq = false;
+    while i < text.len() {
+        let c = text[i..].chars().next().unwrap();
+        if in_dq {
+            match c {
+                '"' => in_dq = false,
+                '\\' => {
+                    i += c.len_utf8();
+                    if i < text.len() {
+                        i += text[i..].chars().next().unwrap().len_utf8();
+                    }
+                    continue;
+                }
+                _ => {}
+            }
+            i += c.len_utf8();
+            continue;
+        }
+        match c {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+            '\'' => {
+                i += c.len_utf8();
+                while i < text.len() && !text[i..].starts_with('\'') {
+                    i += text[i..].chars().next().unwrap().len_utf8();
+                }
+            }
+            '"' => in_dq = true,
             '\\' => {
                 i += c.len_utf8();
                 if i < text.len() {

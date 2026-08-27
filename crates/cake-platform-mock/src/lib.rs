@@ -242,6 +242,10 @@ impl Platform for MockPlatform {
         1
     }
 
+    fn fd_path(&self, fd: Fd) -> String {
+        format!("/dev/fd/{fd}")
+    }
+
     fn set_current_dir(&self, path: &str) -> Result<(), PlatformError> {
         *self.cwd.lock().unwrap() = path.to_owned();
         Ok(())

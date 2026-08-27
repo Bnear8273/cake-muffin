@@ -384,6 +384,8 @@ pub trait Platform: Sync {
     fn time_seconds(&self) -> i64;
     /// The parent process id (for `$PPID`).
     fn parent_pid(&self) -> i32;
+    /// The path under which `fd` can be opened (`/dev/fd/N` on Unix).
+    fn fd_path(&self, fd: Fd) -> String;
 }
 
 // ---------------------------------------------------------------------------

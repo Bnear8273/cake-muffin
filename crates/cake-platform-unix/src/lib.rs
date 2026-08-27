@@ -491,6 +491,10 @@ impl Platform for UnixPlatform {
         unsafe { libc::getppid() }
     }
 
+    fn fd_path(&self, fd: Fd) -> String {
+        format!("/dev/fd/{fd}")
+    }
+
     fn set_current_dir(&self, path: &str) -> Result<(), PlatformError> {
         std::env::set_current_dir(path).map_err(|e| PlatformError::Io(e.to_string()))
     }

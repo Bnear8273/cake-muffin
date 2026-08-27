@@ -45,6 +45,9 @@ pub struct ExpandCtx<'a> {
     pub lineno: u32,
     /// Parent process id (`$PPID`).
     pub parent_pid: i32,
+    /// Fds backing `<(cmd)`/`>(cmd)` process substitutions; kept open until
+    /// the end of evaluation.
+    pub proc_subst_fds: &'a mut Vec<cake_platform::Fd>,
 }
 
 /// The characters that make up IFS by default when IFS is unset.
@@ -374,8 +377,70 @@ fn expand_part(ctx: &mut ExpandCtx, part: &WordPart, in_dquotes: bool) -> Result
         // Brace expansion is handled as a pre-pass in `expand_word`; a
         // `Brace` part that survives (quoted) is literal.
         WordPart::Brace(s, _) => Ok(PartOut::Append(s.clone())),
-        WordPart::ProcessSubst(s, _) => Ok(PartOut::Append(s.clone())),
+        WordPart::ProcessSubst(s, _) => expand_process_subst(ctx, s),
     }
+}
+
+/// Evaluate `cmd` in a forked child with stdout captured, then strip all
+/// trailing newlines (bash semantics).
+/// `<(cmd)` / `>(cmd)`: run `cmd` in a child connected to a pipe, expand to
+/// the pipe end's `/dev/fd/N` path. The fd is kept open (registered on the
+/// executor) until evaluation finishes, so the command can read/write it.
+fn expand_process_subst(ctx: &mut ExpandCtx, raw: &str) -> Result<PartOut, String> {
+    let (is_input, body) = match raw.as_bytes().first() {
+        Some(b'<') => (true, &raw[2..raw.len().saturating_sub(1)]),
+        Some(b'>') => (false, &raw[2..raw.len().saturating_sub(1)]),
+        _ => return Err(alloc::format!("cake: bad process substitution `{raw}`")),
+    };
+    let p = cake_platform::get();
+    let (r, w) = p
+        .pipe(false)
+        .map_err(|e| alloc::format!("cake: pipe: {e}"))?;
+    let mut env = Some(ctx.env.clone());
+    let mut positional = Some(ctx.positional.to_vec());
+    let mut functions = Some(ctx.functions.clone());
+    let mut aliases = Some(ctx.aliases.clone());
+    let nounset = ctx.nounset;
+    let noglob = ctx.noglob;
+    let shopt = ctx.shopt;
+    let errexit = ctx.errexit;
+    let handle = p.run_in_child(&mut move || {
+        let mut sub = crate::executor::Executor::new(env.take().unwrap_or_default());
+        sub.positional = positional.take().unwrap_or_default();
+        sub.functions = functions.take().unwrap_or_default();
+        sub.aliases = aliases.take().unwrap_or_default();
+        sub.nounset = nounset;
+        sub.noglob = noglob;
+        sub.shopt = shopt;
+        sub.errexit = errexit;
+        if is_input {
+            // `<(cmd)`: the command's stdout feeds the pipe.
+            let _ = p.dup2(w, 1);
+            let _ = p.close(r);
+        } else {
+            // `>(cmd)`: the command reads the pipe on stdin.
+            let _ = p.dup2(r, 0);
+            let _ = p.close(w);
+        }
+        let outcome = sub.eval_str(body);
+        outcome.status.status_code()
+    });
+    let keep = if is_input {
+        let _ = p.close(w);
+        r
+    } else {
+        let _ = p.close(r);
+        w
+    };
+    let handle = handle.map_err(|e| {
+        let _ = p.close(keep);
+        alloc::format!("cake: process substitution: {e}")
+    })?;
+    // Reap asynchronously: the child may outlive the command that consumed
+    // the fd (bash waits for it when the shell exits).
+    let _ = p.wait(&handle, cake_platform::WaitOptions::NOHANG);
+    ctx.proc_subst_fds.push(keep);
+    Ok(PartOut::Append(p.fd_path(keep)))
 }
 
 /// Evaluate `cmd` in a forked child with stdout captured, then strip all
@@ -1197,6 +1262,7 @@ mod tests {
             start_time: 0,
             lineno: 1,
             parent_pid: 0,
+            proc_subst_fds: &mut alloc::vec::Vec::new(),
         };
         expand_word(&mut ctx, &word).unwrap()
     }

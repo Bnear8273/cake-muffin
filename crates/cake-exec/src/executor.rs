@@ -197,6 +197,8 @@ pub struct Executor {
     pub(crate) start_time: i64,
     /// Line number of the command currently being evaluated (`$LINENO`).
     pub(crate) cmd_lineno: u32,
+    /// Fds kept open for `<(cmd)`/`>(cmd)` process substitutions.
+    pub(crate) proc_subst: Vec<cake_platform::Fd>,
     /// Commands that were not found (persisted by the driver).
     pub blacklist: CommandBlacklist,
     /// `set -e`: exit on a failing simple command (outside exempt contexts).
@@ -243,6 +245,7 @@ impl Executor {
                 .unwrap_or(0x9e3779b9),
             start_time: cake_platform::try_get().map(|p| p.time_seconds()).unwrap_or(0),
             cmd_lineno: 1,
+            proc_subst: Vec::new(),
             blacklist: CommandBlacklist::new(),
             errexit: false,
             nounset: false,
@@ -308,6 +311,10 @@ impl Executor {
             Ok(prog) => {
                 let line_starts = line_starts_of(src);
                 let status = self.eval_program(&prog, &line_starts);
+                // Process-substitution fds live for one evaluation.
+                for fd in self.proc_subst.drain(..) {
+                    let _ = cake_platform::get().close(fd);
+                }
                 self.last_status = status;
                 // A pending `set -e` exit is reported through the status; it
                 // is cleared here so a fresh input starts clean (interactive).
@@ -1109,6 +1116,7 @@ impl Executor {
             start_time: self.start_time,
             lineno: self.cmd_lineno,
             parent_pid: cake_platform::try_get().map(|p| p.parent_pid()).unwrap_or(0),
+            proc_subst_fds: &mut self.proc_subst,
         }
     }
 
