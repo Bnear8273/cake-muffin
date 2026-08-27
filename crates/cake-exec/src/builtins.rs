@@ -2,6 +2,8 @@
 
 use alloc::borrow::ToOwned;
 use alloc::string::{String, ToString};
+use alloc::vec;
+use alloc::vec::Vec;
 
 use cake_env::{EnvVar, EnvVarFlags};
 use cake_proc::ProcStatus;
@@ -27,6 +29,14 @@ pub fn run_builtin(exec: &mut Executor, name: &str, args: &[String]) -> Option<R
         "command" => Ok(ProcStatus::Exit(0)),
         "alias" => alias(exec, args),
         "unalias" => unalias(exec, args),
+        "test" => test_builtin(args),
+        "[" => test_builtin(args),
+        "break" => r#break(exec, args),
+        "continue" => continue_(exec, args),
+        "return" => r#return(exec, args),
+        "source" => source(exec, args),
+        "." => source(exec, args),
+        "read" => read(exec, args),
         _ => return None,
     })
 }
@@ -403,6 +413,317 @@ fn quote_single(s: &str) -> String {
     out
 }
 
+// --- test / [ ---
+
+/// `test EXPR` and `[ EXPR ]`. The arguments arrive already word-split and
+/// expanded by the shell.
+fn test_builtin(args: &[String]) -> Result<ProcStatus, String> {
+    let is_bracket = args.first().map(String::as_str) == Some("[");
+    let mut expr = &args[1..];
+    if is_bracket {
+        if expr.last().map(String::as_str) != Some("]") {
+            return Err("cake: [: missing `]'".into());
+        }
+        expr = &expr[..expr.len() - 1];
+    }
+    if expr.is_empty() {
+        // Bare `test` / `[ ]` with no expression is false.
+        return Ok(ProcStatus::Exit(1));
+    }
+    let val = eval_test_expr(expr)?;
+    Ok(ProcStatus::Exit(if val { 0 } else { 1 }))
+}
+
+/// Evaluate a `test`/`[ ]` expression over already-expanded arguments.
+///
+/// Grammar: `expr := and (-o and)* ; and := not (-a not)* ; not := '!' not |
+/// primary ; primary := unary-op arg | arg binop arg | arg`.
+fn eval_test_expr(args: &[String]) -> Result<bool, String> {
+    let mut p = TestParser { args, pos: 0 };
+    let val = p.parse_or()?;
+    if p.pos != args.len() {
+        return Err(alloc::format!(
+            "cake: test: unexpected argument `{}'",
+            args[p.pos]
+        ));
+    }
+    Ok(val)
+}
+
+struct TestParser<'a> {
+    args: &'a [String],
+    pos: usize,
+}
+
+impl TestParser<'_> {
+    fn peek(&self) -> Option<&str> {
+        self.args.get(self.pos).map(String::as_str)
+    }
+
+    fn eat(&mut self) -> Option<String> {
+        let t = self.args.get(self.pos).cloned()?;
+        self.pos += 1;
+        Some(t)
+    }
+
+    fn parse_or(&mut self) -> Result<bool, String> {
+        let mut val = self.parse_and()?;
+        while self.peek() == Some("-o") {
+            self.eat();
+            let rhs = self.parse_and()?;
+            val = val || rhs;
+        }
+        Ok(val)
+    }
+
+    fn parse_and(&mut self) -> Result<bool, String> {
+        let mut val = self.parse_not()?;
+        while self.peek() == Some("-a") {
+            self.eat();
+            let rhs = self.parse_not()?;
+            val = val && rhs;
+        }
+        Ok(val)
+    }
+
+    fn parse_not(&mut self) -> Result<bool, String> {
+        if self.peek() == Some("!") {
+            self.eat();
+            return Ok(!self.parse_not()?);
+        }
+        self.parse_primary()
+    }
+
+    fn parse_primary(&mut self) -> Result<bool, String> {
+        if let Some(op) = self.peek().map(String::from)
+            && is_unary_op(&op)
+        {
+            self.eat();
+            let arg = self
+                .eat()
+                .ok_or_else(|| "cake: test: argument expected".to_string())?;
+            return unary_test(&op, &arg);
+        }
+        let lhs = self
+            .eat()
+            .ok_or_else(|| "cake: test: expression expected".to_string())?;
+        match self.peek().map(String::from) {
+            Some(bin) if is_binary_op(&bin) => {
+                self.eat();
+                let rhs = self
+                    .eat()
+                    .ok_or_else(|| "cake: test: argument expected".to_string())?;
+                binary_test(&lhs, &bin, &rhs)
+            }
+            _ => Ok(!lhs.is_empty()),
+        }
+    }
+}
+
+fn is_unary_op(op: &str) -> bool {
+    matches!(
+        op,
+        "-n" | "-z" | "-e" | "-f" | "-d" | "-r" | "-w" | "-x" | "-s" | "-L"
+    )
+}
+
+fn is_binary_op(op: &str) -> bool {
+    matches!(
+        op,
+        "=" | "==" | "!=" | "-eq" | "-ne" | "-lt" | "-le" | "-gt" | "-ge" | "<" | ">"
+    )
+}
+
+fn unary_test(op: &str, arg: &str) -> Result<bool, String> {
+    Ok(match op {
+        "-n" => !arg.is_empty(),
+        "-z" => arg.is_empty(),
+        _ => {
+            let p = cake_platform::get();
+            match op {
+                "-e" => p.stat(arg).exists,
+                "-f" => p.stat(arg).is_file,
+                "-d" => p.stat(arg).is_dir,
+                "-r" => p.stat(arg).is_readable,
+                "-w" => p.stat(arg).is_writable,
+                "-x" => p.stat(arg).is_executable,
+                "-s" => p.stat(arg).size > 0,
+                "-L" => p.stat(arg).is_symlink,
+                _ => false,
+            }
+        }
+    })
+}
+
+fn binary_test(lhs: &str, op: &str, rhs: &str) -> Result<bool, String> {
+    Ok(match op {
+        "=" | "==" => lhs == rhs,
+        "!=" => lhs != rhs,
+        "-eq" => parse_num(lhs) == parse_num(rhs),
+        "-ne" => parse_num(lhs) != parse_num(rhs),
+        "-lt" => parse_num(lhs) < parse_num(rhs),
+        "-le" => parse_num(lhs) <= parse_num(rhs),
+        "-gt" => parse_num(lhs) > parse_num(rhs),
+        "-ge" => parse_num(lhs) >= parse_num(rhs),
+        "<" => lhs < rhs,
+        ">" => lhs > rhs,
+        _ => false,
+    })
+}
+
+fn parse_num(s: &str) -> i64 {
+    s.trim().parse().unwrap_or(0)
+}
+
+// --- break / continue / return ---
+
+/// `break [n]` — exit the enclosing `for`/`while`/`until` loop.
+fn r#break(exec: &mut Executor, args: &[String]) -> Result<ProcStatus, String> {
+    if exec.loop_depth == 0 {
+        return Err("cake: break: only meaningful in a `for`, `while`, or `until` loop".into());
+    }
+    let depth = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(1).max(1);
+    exec.loop_control = Some(crate::executor::LoopControl { is_break: true, depth });
+    Ok(ProcStatus::Exit(0))
+}
+
+/// `continue [n]` — skip to the next iteration of the enclosing loop.
+fn continue_(exec: &mut Executor, args: &[String]) -> Result<ProcStatus, String> {
+    if exec.loop_depth == 0 {
+        return Err(
+            "cake: continue: only meaningful in a `for`, `while`, or `until` loop".into(),
+        );
+    }
+    let depth = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(1).max(1);
+    exec.loop_control = Some(crate::executor::LoopControl { is_break: false, depth });
+    Ok(ProcStatus::Exit(0))
+}
+
+/// `return [n]` — exit the enclosing function/sourced file with status `n`.
+fn r#return(exec: &mut Executor, args: &[String]) -> Result<ProcStatus, String> {
+    if exec.fn_depth == 0 {
+        return Err("cake: return: can only `return' from a function or sourced script".into());
+    }
+    let code = match args.get(1) {
+        Some(s) => match s.parse::<i32>() {
+            Ok(n) => n,
+            Err(_) => return Err(alloc::format!("cake: return: `{s}': numeric argument required")),
+        },
+        None => exec.last_status.status_code(),
+    };
+    exec.return_requested = Some(code & 0xff);
+    Ok(ProcStatus::Exit(code & 0xff))
+}
+
+// --- source / . ---
+
+/// `source file [args...]` — read and execute `file` in the current shell.
+fn source(exec: &mut Executor, args: &[String]) -> Result<ProcStatus, String> {
+    let Some(path) = args.get(1) else {
+        return Err("cake: source: filename argument required".into());
+    };
+    let content = read_file(path)
+        .map_err(|e| alloc::format!("cake: source: {path}: {e}"))?;
+    // The sourced file sees args as positional (`$1`, ...); `return` works.
+    let saved_positional = core::mem::replace(
+        &mut exec.positional,
+        alloc::vec![path.clone()].into_iter().chain(args[2..].iter().cloned()).collect(),
+    );
+    exec.fn_depth += 1;
+    let outcome = exec.eval_str(&content);
+    exec.fn_depth -= 1;
+    exec.positional = saved_positional;
+    if let Some(err) = outcome.error {
+        return Err(err);
+    }
+    Ok(outcome.status)
+}
+
+/// Read an entire file into a string via the platform fd layer.
+fn read_file(path: &str) -> Result<String, String> {
+    let p = cake_platform::get();
+    let fd = p
+        .open_file(path, cake_platform::FileOpenMode::Read)
+        .map_err(|e| alloc::format!("{e}"))?;
+    let mut out = Vec::new();
+    let mut buf = [0u8; 4096];
+    loop {
+        match p.read(fd, &mut buf) {
+            Ok(0) => break,
+            Ok(n) => out.extend_from_slice(&buf[..n]),
+            Err(_) => break,
+        }
+    }
+    let _ = p.close(fd);
+    Ok(String::from_utf8_lossy(&out).into_owned())
+}
+
+// --- read ---
+
+/// `read [-r] var...` — read a line from stdin, split on IFS, assign to vars.
+/// The last var receives any remaining fields.
+fn read(exec: &mut Executor, args: &[String]) -> Result<ProcStatus, String> {
+    let mut i = 1;
+    let mut raw = false;
+    if args.get(1).is_some_and(|a| a == "-r") {
+        raw = true;
+        i = 2;
+    }
+    let vars = &args[i..];
+    if vars.is_empty() {
+        return Err("cake: read: usage: read [-r] var...".into());
+    }
+    let line = read_line(raw)?;
+    let ifs: Vec<char> = match exec.env.get("IFS") {
+        Some(v) => v.value().chars().collect(),
+        None => {
+            vec![' ', '\t', '\n']
+        }
+    };
+    let fields: Vec<String> = line
+        .split(|c: char| ifs.contains(&c))
+        .filter(|s| !s.is_empty())
+        .map(String::from)
+        .collect();
+    for (idx, var) in vars.iter().enumerate() {
+        let value = if idx + 1 == vars.len() {
+            fields[idx..].join(" ")
+        } else {
+            fields.get(idx).cloned().unwrap_or_default()
+        };
+        let _ = exec.env.set(var, cake_env::EnvVar::new(value));
+    }
+    Ok(ProcStatus::Exit(0))
+}
+
+/// Read one line (up to `\n`, excluded) from fd 0.
+fn read_line(raw: bool) -> Result<String, String> {
+    let p = cake_platform::get();
+    let mut out = String::new();
+    let mut buf = [0u8; 1];
+    let mut escaped = false;
+    loop {
+        match p.read(0, &mut buf) {
+            Ok(0) => break,
+            Ok(_) => {
+                let b = buf[0];
+                if escaped {
+                    out.push(b as char);
+                    escaped = false;
+                } else if b == b'\\' && !raw {
+                    escaped = true;
+                } else if b == b'\n' {
+                    break;
+                } else {
+                    out.push(b as char);
+                }
+            }
+            Err(_) => break,
+        }
+    }
+    Ok(out)
+}
+
 // --- type ---
 
 fn r#type(exec: &Executor, args: &[String]) -> Result<ProcStatus, String> {
@@ -536,6 +857,7 @@ pub fn is_builtin(name: &str) -> bool {
         name,
         "echo" | "printf" | "true" | ":" | "false" | "exit" | "cd" | "pwd" | "type"
             | "export" | "unset" | "readonly" | "shift" | "command" | "alias" | "unalias"
+            | "test" | "[" | "break" | "continue" | "return" | "source" | "." | "read"
     )
 }
 
@@ -543,7 +865,8 @@ pub fn is_builtin(name: &str) -> bool {
 pub fn builtin_names() -> &'static [&'static str] {
     &[
         "echo", "printf", "true", ":", "false", "exit", "cd", "pwd", "type", "export",
-        "unset", "readonly", "shift", "command", "alias", "unalias",
+        "unset", "readonly", "shift", "command", "alias", "unalias", "test", "[", "break",
+        "continue", "return", "source", ".", "read",
     ]
 }
 
@@ -551,6 +874,8 @@ pub fn builtin_names() -> &'static [&'static str] {
 mod tests {
     use super::*;
     use crate::executor::Executor;
+    use alloc::string::ToString;
+    use alloc::vec::Vec;
     use cake_env::EnvStack;
 
     #[test]
@@ -598,5 +923,28 @@ mod tests {
     fn quote_single_escapes_embedded_quotes() {
         assert_eq!(quote_single("it's"), "it'\\''s");
         assert_eq!(quote_single("plain"), "plain");
+    }
+
+    #[test]
+    fn test_binary_and_unary() {
+        let a = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        // 1 = 2 → false (exit 1)
+        assert_eq!(test_builtin(&a(&["test", "1", "=", "2"])).unwrap(), ProcStatus::Exit(1));
+        // 1 = 1 → true
+        assert_eq!(test_builtin(&a(&["test", "1", "=", "1"])).unwrap(), ProcStatus::Exit(0));
+        // 1 != 2 → true
+        assert_eq!(test_builtin(&a(&["test", "1", "!=", "2"])).unwrap(), ProcStatus::Exit(0));
+        // 2 -gt 1 → true
+        assert_eq!(test_builtin(&a(&["test", "2", "-gt", "1"])).unwrap(), ProcStatus::Exit(0));
+        // -n x → true
+        assert_eq!(test_builtin(&a(&["test", "-n", "x"])).unwrap(), ProcStatus::Exit(0));
+        // -n "" → false
+        assert_eq!(test_builtin(&a(&["test", "-n", ""])).unwrap(), ProcStatus::Exit(1));
+        // ! expression
+        assert_eq!(test_builtin(&a(&["test", "!", "1", "=", "2"])).unwrap(), ProcStatus::Exit(0));
+        // [ 1 = 1 ] → true
+        assert_eq!(test_builtin(&a(&["[", "1", "=", "1", "]"])).unwrap(), ProcStatus::Exit(0));
+        // bare `test` with no args → false
+        assert_eq!(test_builtin(&a(&["test"])).unwrap(), ProcStatus::Exit(1));
     }
 }

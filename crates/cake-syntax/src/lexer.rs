@@ -107,6 +107,19 @@ impl<'a> Lexer<'a> {
 
         let c = self.peek().unwrap();
 
+        // A `#` that begins a word is a comment (bash): run to end of line.
+        // The newline after it is still a command separator. `#` mid-word is
+        // literal and never reaches here.
+        if c == '#' && !self.ctx.in_cond && !self.ctx.in_arith {
+            while let Some(ch) = self.peek() {
+                if ch == '\n' {
+                    break;
+                }
+                self.advance();
+            }
+            return self.next_token();
+        }
+
         // Redirection operators (and io numbers) are recognized everywhere
         // except inside [[ ]] and (( )).
         if !self.ctx.in_cond && !self.ctx.in_arith && (c == '<' || c == '>') {
@@ -400,14 +413,11 @@ impl<'a> Lexer<'a> {
             if !in_dquote && is_metachar(c) {
                 break;
             }
-            // In command position (or case patterns), an unquoted `(`/`)` is
-            // an operator, not a word character: `foo()`, `arr=(...)`,
-            // `a) pattern`.
-            if !in_dquote
-                && matches!(c, '(' | ')')
-                && (self.ctx.cmd_pos || self.ctx.in_case)
-                && !self.ctx.in_redir
-            {
+            // `(` and `)` are always word terminators in bash (they are
+            // metacharacters): `foo()`, `arr=(...)`, `a) pattern`, `echo a(b)`
+            // is a syntax error. Redirection targets may carry `>(...)`
+            // process substitution, so parens are kept there.
+            if !in_dquote && matches!(c, '(' | ')') && !self.ctx.in_redir {
                 break;
             }
             // `]]` closes a conditional even inside a word boundary when in_cond.
@@ -490,11 +500,12 @@ impl<'a> Lexer<'a> {
         let text = self.src[start as usize..self.pos as usize].to_owned();
 
         // In command position (and not a redirect target), a word of the form
-        // NAME=... is an assignment; `NAME=(...)` an array assignment.
+        // NAME=... is an assignment; `NAME=(...)` an array assignment, and
+        // `NAME[expr]=...` an indexed assignment.
         if (self.ctx.cmd_pos || self.ctx.in_typeset)
             && !self.ctx.in_redir
             && let Some(eq) = text.find('=')
-            && is_valid_identifier(&text[..eq])
+            && is_assignment_target(&text[..eq])
         {
             return Ok(Token::new(TokenKind::Assignment, self.span_from(start), text));
         }
@@ -742,4 +753,33 @@ pub fn is_valid_identifier(s: &str) -> bool {
         _ => return false,
     }
     chars.all(|c| c == '_' || c.is_ascii_alphanumeric())
+}
+
+/// Whether the part before `=` of an assignment is `NAME` or `NAME[expr]`
+/// (with balanced brackets).
+fn is_assignment_target(s: &str) -> bool {
+    match s.find('[') {
+        None => is_valid_identifier(s),
+        Some(open) => {
+            if !is_valid_identifier(&s[..open]) || !s.ends_with(']') {
+                return false;
+            }
+            let inner = &s[open + 1..s.len() - 1];
+            // Index expression: balanced brackets (rough check).
+            let mut depth = 0i32;
+            for c in inner.chars() {
+                match c {
+                    '[' => depth += 1,
+                    ']' => {
+                        depth -= 1;
+                        if depth < 0 {
+                            return false;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            depth == 0
+        }
+    }
 }

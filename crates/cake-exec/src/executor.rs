@@ -40,6 +40,15 @@ enum EvalResult {
     Spawned(ProcessHandle),
 }
 
+/// Signal from `break` / `continue`, consumed by the enclosing loop.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct LoopControl {
+    /// `true` = break, `false` = continue.
+    pub(crate) is_break: bool,
+    /// How many levels to affect.
+    pub(crate) depth: u32,
+}
+
 /// The shell evaluator.
 #[derive(Debug)]
 pub struct Executor {
@@ -56,6 +65,14 @@ pub struct Executor {
     pub expand_aliases: bool,
     /// Set when `exit` is called; checked by the outer eval loop.
     exit_requested: Option<i32>,
+    /// Set by `break`/`continue`; consumed by the enclosing loop.
+    pub(crate) loop_control: Option<LoopControl>,
+    /// Set by `return`; consumed by the enclosing function/source.
+    pub(crate) return_requested: Option<i32>,
+    /// Nesting depth of loops (for `break`/`continue` validity).
+    pub(crate) loop_depth: usize,
+    /// Nesting depth of functions/sourced files (for `return` validity).
+    pub(crate) fn_depth: usize,
     /// The shell's own pid (`$$`). Set by the driver.
     pub shell_pid: i32,
     /// Pids of background jobs not yet reaped.
@@ -74,6 +91,10 @@ impl Executor {
             aliases: BTreeMap::new(),
             expand_aliases: false,
             exit_requested: None,
+            loop_control: None,
+            return_requested: None,
+            loop_depth: 0,
+            fn_depth: 0,
             shell_pid: 0,
             background: Vec::new(),
             blacklist: CommandBlacklist::new(),
@@ -164,6 +185,10 @@ impl Executor {
                 break;
             }
             status = self.eval_and_or(item);
+            // `break`/`continue`/`return` skip the rest of this list.
+            if self.loop_control.is_some() || self.return_requested.is_some() {
+                break;
+            }
         }
         status
     }
@@ -171,7 +196,10 @@ impl Executor {
     fn eval_and_or(&mut self, aol: &AndOrList) -> ProcStatus {
         let mut status = self.eval_pipeline(&aol.first);
         for (op, pipeline) in &aol.rest {
-            if self.exit_requested.is_some() {
+            if self.exit_requested.is_some()
+                || self.loop_control.is_some()
+                || self.return_requested.is_some()
+            {
                 break;
             }
             let need_run = match op {
@@ -373,21 +401,41 @@ impl Executor {
     }
 
     fn eval_simple(&mut self, sc: &SimpleCommand, fds: &mut CommandFds) -> Result<EvalResult, String> {
-        // Prefix assignments.
+        // Prefix assignments. Arrays and indexed assignments always take
+        // effect in the current shell; scalar assignments are temporary when
+        // followed by a command.
         let mut temp_assigns: Vec<(String, String)> = Vec::new();
         let mut shell_assigns: Vec<(String, String)> = Vec::new();
         for a in &sc.assignments {
-            let v = match &a.value {
+            match &a.value {
                 AssignmentValue::Word(w) => {
                     let mut ctx = self.ctx();
-                    expand_word_quoted(&mut ctx, w)?
+                    let v = expand_word_quoted(&mut ctx, w)?;
+                    if sc.words.is_empty() {
+                        shell_assigns.push((a.name.clone(), v));
+                    } else {
+                        temp_assigns.push((a.name.clone(), v));
+                    }
                 }
-                _ => String::new(),
-            };
-            if sc.words.is_empty() {
-                shell_assigns.push((a.name.clone(), v));
-            } else {
-                temp_assigns.push((a.name.clone(), v));
+                AssignmentValue::Array(words) => {
+                    let mut values: Vec<String> = Vec::new();
+                    let mut ctx = self.ctx();
+                    for w in words {
+                        values.extend(expand_word(&mut ctx, w)?);
+                    }
+                    self.env
+                        .set(&a.name, cake_env::EnvVar::new_list(values))
+                        .map_err(|e| alloc::format!("cake: {e}"))?;
+                }
+                AssignmentValue::Index { index, value } => {
+                    let mut ctx = self.ctx();
+                    let expanded_idx = expand_word_quoted(&mut ctx, index)?;
+                    let idx_str = crate::arith::eval_arith_value(ctx.env, &expanded_idx)?;
+                    let idx: usize = idx_str.parse().unwrap_or(0);
+                    let v = expand_word_quoted(&mut ctx, value)?;
+                    set_indexed(self, &a.name, idx, v)
+                        .map_err(|e| alloc::format!("cake: {e}"))?;
+                }
             }
         }
 
@@ -470,10 +518,18 @@ impl Executor {
             let _ = self.env.set(n, EnvVar::new(v.clone()));
         }
         let mut fds = CommandFds::default();
+        self.fn_depth += 1;
         let status = self.eval_command(&body, &mut fds).map(|r| match r {
-            EvalResult::Done(st) => st,
+            EvalResult::Done(st) => {
+                // `return` inside the function body overrides the status.
+                match self.return_requested.take() {
+                    Some(code) => ProcStatus::Exit(code),
+                    None => st,
+                }
+            }
             EvalResult::Spawned(h) => self.wait_for(&h),
         });
+        self.fn_depth -= 1;
         self.env.pop_scope();
         self.positional = saved_positional;
         status.map(EvalResult::Done)
@@ -540,18 +596,35 @@ impl Executor {
     }
 
     fn eval_while(&mut self, w: &WhileCommand, until: bool) -> ProcStatus {
+        self.loop_depth += 1;
+        let mut result = ProcStatus::Exit(0);
         loop {
             let st = self.eval_and_or(&w.cond);
             if self.exit_requested.is_some() {
-                return st;
+                result = st;
+                break;
             }
             let do_body = if until { !st.success() } else { st.success() };
             if !do_body {
                 break;
             }
             self.eval_list(&w.body);
+
+            if let Some(lc) = self.loop_control.take() {
+                if lc.is_break {
+                    if lc.depth > 1 {
+                        self.loop_control = Some(LoopControl { is_break: true, depth: lc.depth - 1 });
+                    }
+                    break;
+                }
+                // continue: skip to the next condition check
+                if lc.depth > 1 {
+                    self.loop_control = Some(LoopControl { is_break: false, depth: lc.depth - 1 });
+                }
+            }
         }
-        ProcStatus::Exit(0)
+        self.loop_depth -= 1;
+        result
     }
 
     fn eval_for(&mut self, fc: &ForCommand) -> ProcStatus {
@@ -575,6 +648,7 @@ impl Executor {
                 }
             }
         };
+        self.loop_depth += 1;
         for w in words {
             let _ = self
                 .env
@@ -583,7 +657,20 @@ impl Executor {
             if self.exit_requested.is_some() {
                 break;
             }
+            if let Some(lc) = self.loop_control.take() {
+                if lc.is_break {
+                    if lc.depth > 1 {
+                        self.loop_control = Some(LoopControl { is_break: true, depth: lc.depth - 1 });
+                    }
+                    break;
+                }
+                // continue: move to the next word
+                if lc.depth > 1 {
+                    self.loop_control = Some(LoopControl { is_break: false, depth: lc.depth - 1 });
+                }
+            }
         }
+        self.loop_depth -= 1;
         ProcStatus::Exit(0)
     }
 
@@ -731,6 +818,21 @@ impl Executor {
 /// Whether a word is a plausible alias name: non-empty and not a path.
 fn is_alias_name(word: &str) -> bool {
     !word.is_empty() && !word.contains('/') && !word.contains('\\')
+}
+
+/// Set a specific index of an array variable (growing it if needed).
+fn set_indexed(exec: &mut Executor, name: &str, idx: usize, value: String) -> Result<(), String> {
+    let mut values: Vec<String> = match exec.env.get(name) {
+        Some(v) => v.values().to_vec(),
+        None => Vec::new(),
+    };
+    if idx >= values.len() {
+        values.resize(idx + 1, String::new());
+    }
+    values[idx] = value;
+    exec.env
+        .set(name, cake_env::EnvVar::new_list(values))
+        .map_err(|e| alloc::format!("cake: {e}"))
 }
 
 #[cfg(test)]

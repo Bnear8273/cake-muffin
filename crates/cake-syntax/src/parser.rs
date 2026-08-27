@@ -340,12 +340,21 @@ impl<'a> Parser<'a> {
                     "function" => Some(self.parse_function()?),
                     "{" => Some(self.parse_block()?),
                     _ => {
-                        // Check for 'name ()' function definition.
+                        // Check for 'name ()' function definition.  Peek at
+                        // the next token in argument context so that `!`
+                        // following a command word stays a literal (it was
+                        // tokenized with command context here).  `(` is still
+                        // an operator in arg context.
                         if self.current.kind == TokenKind::Word
-                            && self.peek() == TokenKind::Lparen
                             && self.current.text.chars().all(|c| c.is_alphanumeric() || c == '_')
                         {
-                            Some(self.parse_function()?)
+                            self.set_arg();
+                            if self.peek() == TokenKind::Lparen {
+                                self.set_cmd();
+                                Some(self.parse_function()?)
+                            } else {
+                                None
+                            }
                         } else {
                             None
                         }
@@ -698,13 +707,12 @@ impl<'a> Parser<'a> {
                 }
                 TokenKind::Word => {
                     // Check if this is a function definition: name followed
-                    // by `()` before `{` or any other body.
-                    if self.peek() == TokenKind::Lparen {
-                        // Let the caller handle function definition via
-                        // try_compound_command. Return what we have so far.
-                        break;
-                    }
+                    // by `()`.  (The caller peeked at the next token with
+                    // argument context; if it was `!` that is a literal here.)
                     words.push(self.word_from_token(&self.current));
+                    // The next token is an argument, not command position:
+                    // `!` after a command word is a literal (`[ ! -e x ]`).
+                    self.set_arg();
                     self.advance();
                     // Once we have a command word, remaining tokens are args.
                     break;
@@ -746,10 +754,24 @@ impl<'a> Parser<'a> {
         let text = self.current.text.clone();
         let eq_pos = text.find('=').unwrap();
         let name = text[..eq_pos].to_owned();
-
-        let value = if self.peek() == TokenKind::Lparen {
-            // Array assignment: a=(x y z)
-            self.advance(); // consume = (already in text)
+        // `NAME[expr]=value` → indexed assignment.
+        let (name, value) = if let Some(open) = name.find('[') {
+            let base = name[..open].to_owned();
+            let index_text = name[open + 1..name.len() - 1].to_owned();
+            let index = parse_word(
+                &index_text,
+                Span::new(start + open as u32 + 1, start + name.len() as u32),
+            );
+            let rhs = &text[eq_pos + 1..];
+            let rhs_word = parse_word(
+                rhs,
+                Span::new(start + eq_pos as u32 + 1, self.current.span.end),
+            );
+            self.advance();
+            (base, AssignmentValue::Index { index, value: rhs_word })
+        } else if self.peek() == TokenKind::Lparen {
+            // Array assignment: a=(x y z); the token was just `a=`.
+            self.advance(); // consume the `a=` token
             self.advance(); // consume (
             let mut words = Vec::new();
             self.set_arg();
@@ -766,14 +788,13 @@ impl<'a> Parser<'a> {
                     _ => break,
                 }
             }
-            AssignmentValue::Array(words)
+            (name, AssignmentValue::Array(words))
         } else {
             let rhs = &text[eq_pos + 1..];
             let word = parse_word(rhs, Span::new(start + eq_pos as u32 + 1, self.current.span.end));
             self.advance();
-            AssignmentValue::Word(word)
+            (name, AssignmentValue::Word(word))
         };
-
         Ok(Assignment {
             name,
             value,
