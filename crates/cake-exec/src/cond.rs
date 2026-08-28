@@ -179,7 +179,15 @@ impl<'a> CondParser<'a> {
         // Binary test.
         let lhs = self.expand_word()?;
         let op = self.eat().ok_or_else(|| "expected operator".to_string())?;
-        let rhs = self.expand_word()?;
+        // For `=~`, expand variables but don't glob the RHS (bash behavior).
+        let rhs = if op == "=~" {
+            let raw = self.eat().ok_or_else(|| "expected regex pattern".to_string())?;
+            let fields = expand_plain_string(&mut self.ctx, &raw)
+                .map_err(|e| alloc::format!("expansion error: {e}"))?;
+            fields.into_iter().next().unwrap_or_default()
+        } else {
+            self.expand_word()?
+        };
 
         match op.as_str() {
             // `[[ x == pat ]]` pattern-matches (extglob always active, bash).
@@ -187,6 +195,12 @@ impl<'a> CondParser<'a> {
                 Ok(crate::glob::glob_match_ext(&rhs, &lhs, false, true))
             }
             "!=" => Ok(!crate::glob::glob_match_ext(&rhs, &lhs, false, true)),
+            "=~" => {
+                // `[[ x =~ regex ]]` — POSIX extended regex match.
+                let re = regex::Regex::new(&rhs)
+                    .map_err(|e| alloc::format!("cake: [[ =~ ]]: {e}"))?;
+                Ok(re.is_match(&lhs))
+            }
             "<" => Ok(lhs < rhs),
             ">" => Ok(lhs > rhs),
             "-eq" => Ok(parse_num(&lhs) == parse_num(&rhs)),
@@ -255,7 +269,7 @@ fn tokenize_cond(text: &str) -> Vec<String> {
             continue;
         }
         // Multi-char comparison operators before single-char handling.
-        if matches!(c, '!' | '<' | '>') && chars.peek() == Some(&'=') {
+        if matches!(c, '!' | '<' | '>' | '=') && chars.peek() == Some(&'=') {
             flush!();
             chars.next();
             let mut tok = String::new();

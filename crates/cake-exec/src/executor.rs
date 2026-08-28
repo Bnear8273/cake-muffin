@@ -158,6 +158,8 @@ pub struct ShoptBits {
     pub nocaseglob: bool,
     /// `extglob`: extended glob patterns `?(...)` `*(...)` `+(...)` `@(...)` `!(...)`.
     pub extglob: bool,
+    /// `globstar`: `**` matches any number of directories recursively.
+    pub globstar: bool,
 }
 
 /// The shell evaluator.
@@ -229,6 +231,8 @@ pub struct Executor {
     errexit_pending: Option<i32>,
     /// Suppresses nested trap execution.
     in_trap: bool,
+    /// Directory stack for `pushd`/`popd`.
+    pub(crate) dir_stack: Vec<String>,
 }
 
 impl Executor {
@@ -269,6 +273,7 @@ impl Executor {
             errexit_suppress: 0,
             errexit_pending: None,
             in_trap: false,
+            dir_stack: Vec::new(),
         }
     }
 

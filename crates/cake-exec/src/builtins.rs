@@ -43,6 +43,12 @@ pub fn run_builtin(exec: &mut Executor, name: &str, args: &[String]) -> Option<R
         "jobs" => jobs(exec, args),
         "wait" => wait(exec, args),
         "eval" => eval_(exec, args),
+        "local" => local(exec, args),
+        "declare" | "typeset" => declare(exec, args),
+        "pushd" => pushd(exec, args),
+        "popd" => popd(exec, args),
+        "dirs" => dirs(exec),
+        "getopts" => getopts(exec, args),
         "fg" => fg_bg(exec, args, true),
         "bg" => fg_bg(exec, args, false),
         _ => return None,
@@ -872,7 +878,348 @@ fn eval_(exec: &mut Executor, args: &[String]) -> Result<ProcStatus, String> {
     Ok(outcome.status)
 }
 
-// --- jobs ---
+// --- local ---
+
+/// `local [flags] [name[=value] ...]` — declare function-local variables.
+fn local(exec: &mut Executor, args: &[String]) -> Result<ProcStatus, String> {
+    if exec.fn_depth == 0 {
+        return Err("local: can only be used in a function".into());
+    }
+    let mut flags = EnvVarFlags::NONE;
+    let mut i = 1;
+    while i < args.len() && args[i].starts_with('-') && args[i].len() > 1 {
+        for c in args[i][1..].chars() {
+            match c {
+                'r' => flags.insert(EnvVarFlags::READONLY),
+                'x' => flags.insert(EnvVarFlags::EXPORT),
+                'i' => flags.insert(EnvVarFlags::INTEGER),
+                'a' | 'A' | 'n' | 'l' | 't' | 'u' => {} // accepted, stored as flags
+                _ => return Err(alloc::format!("local: -{c}: invalid option")),
+            }
+        }
+        i += 1;
+    }
+    if i >= args.len() {
+        // No args: print local vars (declare -p style).
+        let mut buf = String::new();
+        for name in exec.env.get_names() {
+            if let Some(var) = exec.env.get(name) {
+                buf.push_str(&alloc::format!("declare -{flags_str} {name}=\"{value}\"\n",
+                    flags_str = flag_str(var.flags()),
+                    value = var.value()));
+            }
+        }
+        out(&buf);
+        return Ok(ProcStatus::Exit(0));
+    }
+    for arg in &args[i..] {
+        if let Some(eq) = arg.find('=') {
+            let name = &arg[..eq];
+            let val = &arg[eq + 1..];
+            if !is_identifier(name) {
+                return Err(alloc::format!("local: `{name}': not a valid identifier"));
+            }
+            exec.env
+                .set(name, EnvVar::new(val).set_flags(flags))
+                .map_err(|e| alloc::format!("local: {e}"))?;
+        } else {
+            if !is_identifier(arg) {
+                return Err(alloc::format!("local: `{arg}': not a valid identifier"));
+            }
+            exec.env
+                .set(arg, EnvVar::new("").set_flags(flags))
+                .map_err(|e| alloc::format!("local: {e}"))?;
+        }
+    }
+    Ok(ProcStatus::Exit(0))
+}
+
+// --- declare / typeset ---
+
+/// `declare [flags] [name[=value] ...]` — declare variables with attributes.
+fn declare(exec: &mut Executor, args: &[String]) -> Result<ProcStatus, String> {
+    let mut flags = EnvVarFlags::NONE;
+    let mut print_decl = false;
+    let mut global = false;
+    let mut i = 1;
+    while i < args.len() && args[i].starts_with('-') && args[i].len() > 1 {
+        for c in args[i][1..].chars() {
+            match c {
+                'r' => flags.insert(EnvVarFlags::READONLY),
+                'x' => flags.insert(EnvVarFlags::EXPORT),
+                'g' => global = true,
+                'p' => print_decl = true,
+                'i' => flags.insert(EnvVarFlags::INTEGER),
+                'a' | 'A' | 'n' | 'l' | 't' | 'u' => {} // accepted, stored as flags
+                _ => return Err(alloc::format!("declare: -{c}: invalid option")),
+            }
+        }
+        i += 1;
+    }
+    if i >= args.len() {
+        // No args: print all variables (or just exported if -x was given).
+        let mut buf = String::new();
+        for name in exec.env.get_names() {
+            if let Some(var) = exec.env.get(name) {
+                if flags.contains(EnvVarFlags::EXPORT) && !var.is_exported() {
+                    continue;
+                }
+                buf.push_str(&alloc::format!("declare -{flags_str} {name}=\"{value}\"\n",
+                    flags_str = flag_str(var.flags()),
+                    value = var.value()));
+            }
+        }
+        out(&buf);
+        return Ok(ProcStatus::Exit(0));
+    }
+    for arg in &args[i..] {
+        if let Some(eq) = arg.find('=') {
+            let name = &arg[..eq];
+            let val = &arg[eq + 1..];
+            if !is_identifier(name) {
+                return Err(alloc::format!("declare: `{name}': not a valid identifier"));
+            }
+            if global {
+                exec.env
+                    .set_global(name, EnvVar::new(val).set_flags(flags))
+                    .map_err(|e| alloc::format!("declare: {e}"))?;
+            } else {
+                exec.env
+                    .set(name, EnvVar::new(val).set_flags(flags))
+                    .map_err(|e| alloc::format!("declare: {e}"))?;
+            }
+        } else if print_decl {
+            // `declare -p name`: print the declaration.
+            match exec.env.get(arg) {
+                Some(var) => out(&alloc::format!(
+                    "declare -{flags_str} {arg}=\"{value}\"\n",
+                    flags_str = flag_str(var.flags()),
+                    value = var.value()
+                )),
+                None => return Err(alloc::format!(
+                    "declare: {arg}: not found"
+                )),
+            }
+        } else {
+            if !is_identifier(arg) {
+                return Err(alloc::format!("declare: `{arg}': not a valid identifier"));
+            }
+            if global {
+                let _ = exec.env.set_global(arg, EnvVar::new("").set_flags(flags));
+            } else {
+                let _ = exec.env.set(arg, EnvVar::new("").set_flags(flags));
+            }
+        }
+    }
+    Ok(ProcStatus::Exit(0))
+}
+
+fn flag_str(flags: EnvVarFlags) -> String {
+    let mut s = String::new();
+    if flags.contains(EnvVarFlags::INTEGER) {
+        s.push('i');
+    }
+    if flags.contains(EnvVarFlags::READONLY) {
+        s.push('r');
+    }
+    if flags.contains(EnvVarFlags::EXPORT) {
+        s.push('x');
+    }
+    s
+}
+
+// --- pushd / popd / dirs ---
+
+/// `pushd [dir]` — push current directory onto the stack, then cd to dir.
+fn pushd(exec: &mut Executor, args: &[String]) -> Result<ProcStatus, String> {
+    let old = cake_platform::get().current_dir();
+    let target = match args.get(1) {
+        None => {
+            // `pushd` with no args: swap top two stack entries.
+            if exec.dir_stack.is_empty() {
+                return Err("pushd: no other directory in stack".into());
+            }
+            let top = exec.dir_stack.last().cloned().unwrap_or_default();
+            exec.dir_stack.push(old.clone());
+            top
+        }
+        Some(d) if d == "-n" => {
+            // `pushd -n`: just manipulate the stack, don't cd.
+            if let Some(top) = exec.dir_stack.pop() {
+                exec.dir_stack.push(old.clone());
+                exec.dir_stack.push(top);
+            }
+            return Ok(ProcStatus::Exit(0));
+        }
+        Some(d) => d.clone(),
+    };
+    cake_platform::get()
+        .set_current_dir(&target)
+        .map_err(|e| alloc::format!("pushd: {target}: {e}"))?;
+    exec.dir_stack.push(old.clone());
+    exec.env
+        .set("OLDPWD", EnvVar::new(old).set_flags(EnvVarFlags::EXPORT))
+        .ok();
+    exec.env
+        .set("PWD", EnvVar::new(cake_platform::get().current_dir()).set_flags(EnvVarFlags::EXPORT))
+        .ok();
+    out(&alloc::format!("{}\n", cake_platform::get().current_dir()));
+    Ok(ProcStatus::Exit(0))
+}
+
+/// `popd` — pop the top directory off the stack, then cd to it.
+fn popd(exec: &mut Executor, args: &[String]) -> Result<ProcStatus, String> {
+    let mut i = 1;
+    let print = false;
+    while i < args.len() && args[i].starts_with('-') && args[i].len() > 1 {
+        for c in args[i][1..].chars() {
+            match c {
+                'n' => {} // accepted: don't print
+                'p' => {} // accepted: physically remove
+                _ => return Err(alloc::format!("popd: -{c}: invalid option")),
+            }
+        }
+        i += 1;
+    }
+    if i < args.len() && args[i] == "+0" {
+        // popd +0 is a no-op (top of stack).
+    }
+    let target = exec.dir_stack.pop().ok_or("popd: directory stack empty")?;
+    cake_platform::get()
+        .set_current_dir(&target)
+        .map_err(|e| alloc::format!("popd: {target}: {e}"))?;
+    exec.env
+        .set("OLDPWD", EnvVar::new(target).set_flags(EnvVarFlags::EXPORT))
+        .ok();
+    exec.env
+        .set("PWD", EnvVar::new(cake_platform::get().current_dir()).set_flags(EnvVarFlags::EXPORT))
+        .ok();
+    if print {
+        out(&alloc::format!("{}\n", cake_platform::get().current_dir()));
+    }
+    Ok(ProcStatus::Exit(0))
+}
+
+/// `dirs` — print the directory stack.
+fn dirs(exec: &Executor) -> Result<ProcStatus, String> {
+    let mut buf = String::new();
+    buf.push_str(&cake_platform::get().current_dir());
+    for d in exec.dir_stack.iter().rev() {
+        buf.push(' ');
+        buf.push_str(d);
+    }
+    buf.push('\n');
+    out(&buf);
+    Ok(ProcStatus::Exit(0))
+}
+
+// --- getopts ---
+
+/// `getopts optstring varname [args...]` — parse positional parameters for options.
+fn getopts(exec: &mut Executor, args: &[String]) -> Result<ProcStatus, String> {
+    if args.len() < 3 {
+        return Err("getopts: usage: getopts optstring name [arg...]".into());
+    }
+    let optstring = &args[1];
+    let varname = &args[2];
+    let cmd_args = if args.len() > 3 {
+        &args[3..]
+    } else {
+        // Use positional parameters ($1, $2, ...) if no args given.
+        if exec.positional.len() <= 1 {
+            let _ = exec.env.set("OPTARG", EnvVar::new(""));
+            return Ok(ProcStatus::Exit(1));
+        }
+        &exec.positional[1..]
+    };
+
+    // Read OPTIND from env (default 1).
+    let mut idx = exec.env.get("OPTIND")
+        .and_then(|v| v.value().parse::<usize>().ok())
+        .unwrap_or(1);
+
+    if idx == 0 {
+        idx = 1;
+    }
+
+    // Get the current argument.
+    if idx > cmd_args.len() {
+        // No more arguments.
+        let _ = exec.env.set(varname, EnvVar::new(""));
+        let _ = exec.env.set("OPTARG", EnvVar::new(""));
+        return Ok(ProcStatus::Exit(1));
+    }
+
+    let arg = &cmd_args[idx - 1];
+
+    // Must start with '-' and not be '--'.
+    if !arg.starts_with('-') || arg == "--" {
+        let _ = exec.env.set(varname, EnvVar::new(""));
+        let _ = exec.env.set("OPTARG", EnvVar::new(""));
+        // Skip past '--' if present.
+        if arg == "--" {
+            idx += 1;
+        }
+        let _ = exec.env.set("OPTIND", EnvVar::new(idx.to_string()));
+        return Ok(ProcStatus::Exit(1));
+    }
+
+    // Handle combined options (e.g., `-abc`).
+    // For simplicity, process one option at a time.
+    let opt_char = arg.as_bytes()[1] as char;
+
+    // Check if this option requires an argument.
+    let mut requires_arg = false;
+    let mut silent = false;
+    let mut chars = optstring.chars().peekable();
+    if chars.peek() == Some(&':') {
+        silent = true;
+        chars.next();
+    }
+    while let Some(c) = chars.next() {
+        if c == ':' {
+            continue;
+        }
+        if c == opt_char {
+            // Check if next char in optstring is ':' (requires arg).
+            requires_arg = chars.peek() == Some(&':');
+            break;
+        }
+    }
+
+    if requires_arg {
+        // Argument is the next part of this arg or the next arg.
+        if arg.len() > 2 {
+            // `-farg` form.
+            let optarg_val = &arg[2..];
+            let _ = exec.env.set(varname, EnvVar::new(opt_char.to_string()));
+            let _ = exec.env.set("OPTARG", EnvVar::new(optarg_val));
+            idx += 1;
+        } else if idx < cmd_args.len() {
+            // `-f arg` form.
+            let optarg_val = &cmd_args[idx];
+            let _ = exec.env.set(varname, EnvVar::new(opt_char.to_string()));
+            let _ = exec.env.set("OPTARG", EnvVar::new(optarg_val));
+            idx += 2;
+        } else {
+            // Missing argument.
+            let _ = exec.env.set(varname, EnvVar::new(if silent { ':' } else { '?' }.to_string()));
+            let _ = exec.env.set("OPTARG", EnvVar::new(""));
+            idx += 1;
+        }
+    } else {
+        let _ = exec.env.set(varname, EnvVar::new(opt_char.to_string()));
+        let _ = exec.env.set("OPTARG", EnvVar::new(""));
+        if arg.len() > 2 {
+            // More options in this arg; don't advance idx.
+        } else {
+            idx += 1;
+        }
+    }
+
+    let _ = exec.env.set("OPTIND", EnvVar::new(idx.to_string()));
+    Ok(ProcStatus::Exit(0))
+}
 
 /// `jobs [-l]` — list background jobs.
 fn jobs(exec: &mut Executor, args: &[String]) -> Result<ProcStatus, String> {
@@ -1119,7 +1466,7 @@ fn shopt(exec: &mut Executor, args: &[String]) -> Result<ProcStatus, String> {
     }
     // Print mode: no args → all options; with names → those options.
     let list: Vec<&str> = if names.is_empty() {
-        vec!["nullglob", "dotglob", "nocaseglob", "extglob"]
+        vec!["nullglob", "dotglob", "nocaseglob", "extglob", "globstar"]
     } else {
         names
     };
@@ -1149,6 +1496,7 @@ fn shopt_slot(exec: &Executor, name: &str) -> Option<bool> {
         "dotglob" => exec.shopt.dotglob,
         "nocaseglob" => exec.shopt.nocaseglob,
         "extglob" => exec.shopt.extglob,
+        "globstar" => exec.shopt.globstar,
         _ => return None,
     })
 }
@@ -1159,6 +1507,7 @@ fn shopt_slot_mut<'a>(exec: &'a mut Executor, name: &str) -> Option<&'a mut bool
         "dotglob" => &mut exec.shopt.dotglob,
         "nocaseglob" => &mut exec.shopt.nocaseglob,
         "extglob" => &mut exec.shopt.extglob,
+        "globstar" => &mut exec.shopt.globstar,
         _ => return None,
     })
 }
@@ -1277,6 +1626,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "export" | "unset" | "readonly" | "shift" | "command" | "alias" | "unalias"
             | "test" | "[" | "break" | "continue" | "return" | "source" | "." | "read"
             | "set" | "shopt" | "trap" | "jobs" | "wait" | "fg" | "bg" | "eval"
+            | "local" | "declare" | "typeset"             | "pushd" | "popd" | "dirs" | "getopts"
     )
 }
 
@@ -1286,7 +1636,8 @@ pub fn builtin_names() -> &'static [&'static str] {
         "echo", "printf", "true", ":", "false", "exit", "cd", "pwd", "type", "export",
         "unset", "readonly", "shift", "command", "alias", "unalias", "test", "[", "break",
         "continue", "return", "source", ".", "read", "set", "shopt", "trap",
-        "jobs", "wait", "fg", "bg", "eval",
+        "jobs", "wait", "fg", "bg", "eval", "local", "declare", "typeset",
+        "pushd", "popd", "dirs", "getopts",
     ]
 }
 

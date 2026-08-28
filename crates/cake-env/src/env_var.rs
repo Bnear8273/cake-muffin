@@ -17,6 +17,9 @@ impl EnvVarFlags {
     /// Path-like list variable: values joined with `:` when exported (PATH,
     /// CDPATH, MANPATH, ...).
     pub const PATHVAR: EnvVarFlags = EnvVarFlags(1 << 2);
+    /// Variable holds an integer; assignments are evaluated arithmetically
+    /// (`declare -i`).
+    pub const INTEGER: EnvVarFlags = EnvVarFlags(1 << 3);
 
     pub fn contains(self, other: EnvVarFlags) -> bool {
         self.0 & other.0 == other.0

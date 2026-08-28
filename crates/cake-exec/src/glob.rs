@@ -110,6 +110,25 @@ fn parse_class(pat: &[u8], i: &mut usize) -> PNode {
             return PNode::Class { negated, ranges };
         }
         first = false;
+        // POSIX character class: [[:alpha:]], [:digit:], etc.
+        if pat[*i] == b'[' && *i + 1 < pat.len() && pat[*i + 1] == b':' {
+            // Look ahead for [:name:]]
+            let class_start = *i + 2;
+            if let Some(class_end) = find_posix_class(pat, class_start) {
+                let class_name = &pat[class_start..class_end];
+                // Add the POSIX class ranges.
+                if let Some(class_ranges) = posix_class_ranges(class_name) {
+                    ranges.extend(class_ranges);
+                }
+                // Skip past ":]" to the closing `]` of the outer class.
+                *i = class_end + 2; // skip past ']'
+                if *i < pat.len() && pat[*i] == b']' {
+                    *i += 1;
+                    return PNode::Class { negated, ranges };
+                }
+                continue;
+            }
+        }
         if pat[*i] == b'\\' && *i + 1 < pat.len() {
             *i += 1;
         }
@@ -124,6 +143,43 @@ fn parse_class(pat: &[u8], i: &mut usize) -> PNode {
     // Unterminated class: treat `[` as a literal.
     *i = start + 1;
     PNode::Class { negated: false, ranges: vec![(b'[', b'[')] }
+}
+
+/// Find the closing `:` in a POSIX class `[:name:]` inside a bracket expression.
+/// Returns the index of the closing `]` (not the `:` before it).
+fn find_posix_class(pat: &[u8], start: usize) -> Option<usize> {
+    let mut i = start;
+    while i < pat.len() {
+        if pat[i] == b':' && i + 1 < pat.len() && pat[i + 1] == b']' {
+            return Some(i);
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Map a POSIX character class name to its byte ranges.
+fn posix_class_ranges(name: &[u8]) -> Option<Vec<(u8, u8)>> {
+    match name {
+        b"alnum" => Some(vec![(b'0', b'9'), (b'A', b'Z'), (b'a', b'z')]),
+        b"alpha" => Some(vec![(b'A', b'Z'), (b'a', b'z')]),
+        b"blank" => Some(vec![(b' ', b' '), (b'\t', b'\t')]),
+        b"cntrl" => Some(vec![(b'\x00', b'\x1f'), (b'\x7f', b'\x7f')]),
+        b"digit" => Some(vec![(b'0', b'9')]),
+        b"graph" => Some(vec![(b'!', b'~')]),
+        b"lower" => Some(vec![(b'a', b'z')]),
+        b"print" => Some(vec![(b' ', b'~')]),
+        b"punct" => Some(vec![
+            (b'!', b'/'), (b':', b'@'), (b'[', b'`'), (b'{', b'~'),
+        ]),
+        b"space" => Some(vec![
+            (b' ', b' '), (b'\t', b'\t'), (b'\n', b'\n'),
+            (b'\x0b', b'\x0b'), (b'\x0c', b'\x0c'), (b'\r', b'\r'),
+        ]),
+        b"upper" => Some(vec![(b'A', b'Z')]),
+        b"xdigit" => Some(vec![(b'0', b'9'), (b'A', b'F'), (b'a', b'f')]),
+        _ => None,
+    }
 }
 
 fn class_matches(c: u8, negated: bool, ranges: &[(u8, u8)], nocase: bool) -> bool {
@@ -268,10 +324,11 @@ pub fn has_glob_chars_ext(s: &str, extglob: bool) -> bool {
 ///
 /// Walks each path component in turn, matching entries with [`glob_match`].
 /// `*`/`?`/`[...]` do not match a leading `.` unless the pattern component
-/// starts with one (or `dotglob` is set). Results are sorted (bash sorts
+/// starts with one (or `dotglob` is set). `**` matches any number of
+/// directories (including none) recursively. Results are sorted (bash sorts
 /// lexicographically). Returns an empty `Vec` when nothing matches (the
 /// caller keeps the literal pattern).
-pub fn expand_glob(pattern: &str, dotglob: bool, nocaseglob: bool, extglob: bool) -> Vec<String> {
+pub fn expand_glob(pattern: &str, dotglob: bool, nocaseglob: bool, extglob: bool, globstar: bool) -> Vec<String> {
     let p = cake_platform::get();
     let abs = pattern.starts_with('/');
     let parts: Vec<&str> = pattern
@@ -285,10 +342,61 @@ pub fn expand_glob(pattern: &str, dotglob: bool, nocaseglob: bool, extglob: bool
     let sep = p.path_separator();
     // Accumulated matched path prefixes (`""` = relative to cwd).
     let mut results: Vec<String> = vec![String::new()];
+    // Tracks whether each result came from a globstar `**` expansion
+    // (used to allow the Err fallback for files in subsequent components).
+    let mut from_globstar: Vec<bool> = vec![false];
 
     for (i, part) in parts.iter().enumerate() {
         let mut next: Vec<String> = Vec::new();
-        for base in &results {
+        let mut next_gs: Vec<bool> = Vec::new();
+
+        // `**` — recursive directory match (only when `globstar` is set):
+        // collect all entries under each base, then skip to the next
+        // component (the remaining pattern is matched against every entry
+        // found recursively). When `globstar` is off, `**` behaves like `*`.
+        if *part == "**" && globstar {
+            for base in &results {
+                let dir = if i == 0 && !abs {
+                    "."
+                } else if base.is_empty() {
+                    "/"
+                } else {
+                    base
+                };
+                let mut entries = Vec::new();
+                // If ** is not the last component, only collect directories
+                // so the next component can iterate their contents.
+                // Also include the base dir itself for zero-length ** matches.
+                let dirs_only = i + 1 < parts.len();
+                collect_recursive(p, dir, &mut entries, sep, dirs_only, dotglob);
+                // For zero-length ** matches: include the base dir itself.
+                if !dir.is_empty() && dir != "." && !entries.contains(&alloc::string::ToString::to_string(dir)) {
+                    entries.insert(0, alloc::string::ToString::to_string(dir));
+                }
+                // collect_recursive already builds full paths from `dir`.
+                // For relative patterns rooted at ".", strip the "./" prefix.
+                if !abs && (i == 0 && base.is_empty()) {
+                    for e in entries {
+                        if let Some(stripped) = e.strip_prefix("./").or_else(|| e.strip_prefix(".\\")) {
+                            next.push(alloc::string::ToString::to_string(stripped));
+                            next_gs.push(true);
+                        } else {
+                            next.push(e);
+                            next_gs.push(true);
+                        }
+                    }
+                } else {
+                    let n = entries.len();
+                    next.extend(entries);
+                    next_gs.resize(next_gs.len() + n, true);
+                }
+            }
+            results = next;
+            from_globstar = next_gs;
+            continue;
+        }
+
+        for (idx, base) in results.iter().enumerate() {
             let dir = if i == 0 && !abs {
                 "."
             } else if base.is_empty() {
@@ -298,7 +406,23 @@ pub fn expand_glob(pattern: &str, dotglob: bool, nocaseglob: bool, extglob: bool
             };
             let entries = match p.read_dir(dir) {
                 Ok(e) => e,
-                Err(_) => continue,
+                Err(_) => {
+                    // If base is a file from a globstar ** expansion, try matching
+                    // its filename against the current component.
+                    if from_globstar[idx]
+                        && i > 0
+                        && p.stat(base).exists
+                        && !p.stat(base).is_dir
+                        && base.rsplit(sep).next().is_some_and(|fname| {
+                            has_glob_chars_ext(part, extglob)
+                                && glob_match_ext(part, fname, nocaseglob, extglob)
+                        })
+                    {
+                        next.push(base.clone());
+                        next_gs.push(false);
+                    }
+                    continue;
+                }
             };
             let join = |name: &str| {
                 let mut s = String::new();
@@ -318,10 +442,12 @@ pub fn expand_glob(pattern: &str, dotglob: bool, nocaseglob: bool, extglob: bool
                     }
                     if glob_match_ext(part, name, nocaseglob, extglob) {
                         next.push(join(name));
+                        next_gs.push(false);
                     }
                 }
             } else if *part == "." {
                 next.push(base.clone());
+                next_gs.push(false);
             } else if *part == ".." {
                 let mut s = String::new();
                 s.push_str(base);
@@ -330,17 +456,54 @@ pub fn expand_glob(pattern: &str, dotglob: bool, nocaseglob: bool, extglob: bool
                 }
                 s.push_str("..");
                 next.push(s);
+                next_gs.push(false);
             } else if entries.iter().any(|e| e == part) {
                 next.push(join(part));
+                next_gs.push(false);
             }
         }
         results = next;
+        from_globstar = next_gs;
         if results.is_empty() {
             break;
         }
     }
     results.sort();
     results
+}
+
+/// Recursively collect all entries under `dir`. When `dirs_only` is true,
+/// only directories are collected (but NOT `dir` itself).
+/// When `dotglob` is false, leading-dot names are excluded.
+fn collect_recursive(
+    p: &'static dyn cake_platform::Platform,
+    dir: &str,
+    out: &mut Vec<String>,
+    sep: char,
+    dirs_only: bool,
+    dotglob: bool,
+) {
+    let entries = match p.read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    for name in &entries {
+        if !dotglob && name.starts_with('.') {
+            continue;
+        }
+        let full = if dir.is_empty() || dir == "." {
+            alloc::string::ToString::to_string(name)
+        } else {
+            alloc::format!("{dir}{sep}{name}")
+        };
+        let is_dir = p.stat(&full).is_dir;
+        if !dirs_only || is_dir {
+            out.push(full.clone());
+        }
+        if is_dir {
+            collect_recursive(p, &full, out, sep, dirs_only, dotglob);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -375,5 +538,17 @@ mod tests {
         // `!(b)` can match any prefix that is not exactly `b` (bash).
         assert!(m("!(b)*", "bar.txt"));
         assert!(!m("!(b)", "b"));
+    }
+
+    #[test]
+    fn posix_char_classes() {
+        assert!(glob_match("[[:alpha:]]*.txt", "a.txt"));
+        assert!(glob_match("[[:alpha:]]*.txt", "ABC.txt"));
+        assert!(!glob_match("[[:alpha:]]*.txt", "1.txt"));
+        assert!(glob_match("[[:digit:]]", "7"));
+        assert!(!glob_match("[[:digit:]]", "a"));
+        assert!(glob_match("[[:upper:]]", "Z"));
+        assert!(!glob_match("[[:upper:]]", "z"));
+        assert!(glob_match("?[[:alnum:]]", "a1"));
     }
 }

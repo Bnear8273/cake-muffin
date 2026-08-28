@@ -16,21 +16,28 @@ autosuggestion and a customizable prompt.
   herestrings.
 - **Expansion** (bash order): brace expansion, tilde, parameter expansion
   (`$var`, `${var}`, `${#x}`, `${x:0:5}`, `${x/pat/rep}`, `${x^^}`, `${x:-d}`,
-  `${x#pat}`, ...), command substitution `$(...)` / backticks, arithmetic
+  `${x#pat}`, ...), indirect expansion (`${!name}`), shell-quoted escape
+  (`${var@Q}`), command substitution `$(...)` / backticks, arithmetic
   `$((...))` / `((...))`, IFS field splitting, pathname (glob) expansion,
   quote removal.
-- **Conditionals**: `[ ... ]` and `[[ ... ]]` tests.
+- **Conditionals**: `[ ... ]` and `[[ ... ]]` tests, including `[[ =~ ]]`
+  regex matching.
 - **Builtins**: `echo`, `printf`, `cd`, `pwd`, `export`, `unset`, `readonly`,
-  `shift`, `type`, `alias`, `unalias`, `exit`, `true`/`false`/`:`, `[`/`test`,
-  `read`, `source`, `break`/`continue`/`return`, `set` (`-e`/`-u`/`-f`,
-  `-o pipefail`), `shopt` (`nullglob`/`dotglob`/`nocaseglob`), `trap`
-  (`EXIT`/`ERR`/signals), `jobs`, `wait`, `fg`/`bg`, and more.
+  `local`, `declare`/`typeset`, `shift`, `type`, `alias`, `unalias`, `exit`,
+  `true`/`false`/`:`, `[`/`test`, `read`, `source`, `break`/`continue`/`return`,
+  `set` (`-e`/`-u`/`-f`, `-o pipefail`), `shopt` (`nullglob`/`dotglob`/
+  `nocaseglob`/`extglob`/`globstar`), `trap` (`EXIT`/`ERR`/signals), `pushd`,
+  `popd`, `dirs`, `getopts`, `jobs`, `wait`, `fg`/`bg`, and more.
 - **Shell options**: `set -e` errexit with bash's exemption contexts,
   `set -u` nounset, `set -o pipefail`.
 - **Job control**: background jobs (`cmd &`), `$!`, `jobs`, `wait [pid]`.
 - **Process substitution**: `<(cmd)` and `>(cmd)`.
 - **extglob**: `?(p)` `*(p)` `+(p)` `@(p)` `!(p)` patterns in globbing,
   `case` and `[[ == ]]` (the latter always active, like bash).
+- **globstar** (`shopt -s globstar`): `**` matches any number of directories
+  recursively (off by default, like bash).
+- **POSIX char classes** in globs: `[[:alpha:]]`, `[[:digit:]]`, `[[:alnum:]]`,
+  `[[:upper:]]`, `[[:lower:]]`, `[[:space:]]`, `[[:punct:]]`, etc.
 - **`$(<file)`** shorthand for reading a file.
 - **Special variables**: `$RANDOM`, `$LINENO`, `$SECONDS`, `$PPID`,
   `$PWD`/`$OLDPWD`.
@@ -114,7 +121,7 @@ The bash core (parser, evaluator, expansion) and the interactive layer are
 implemented. Known gaps on the roadmap:
 
 - terminal job control (`fg`/`bg` on a real tty, `Ctrl-Z`)
-- `history` expansion, `disown`, `local`
+- `history` expansion, `disown`
 - `BASH_ENV`/`ENV`-style script startup files
 - `$BASH_ENV` for non-interactive startup (the rc file covers interactive)
 - a Windows backend (`run_in_child` is `fork`-based today)

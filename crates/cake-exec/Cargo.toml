@@ -11,3 +11,4 @@ cake-env = { path = "../cake-env" }
 cake-platform = { path = "../cake-platform" }
 cake-proc = { path = "../cake-proc" }
 cake-syntax = { path = "../cake-syntax" }
+regex = { version = "1", default-features = false, features = ["std", "unicode"] }

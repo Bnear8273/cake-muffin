@@ -157,7 +157,7 @@ fn expand_fields(
     for (i, f) in fields.iter().enumerate() {
         if glob_ok[i] && crate::glob::has_glob_chars_ext(f, ctx.shopt.extglob) {
             let matches =
-                crate::glob::expand_glob(f, ctx.shopt.dotglob, ctx.shopt.nocaseglob, ctx.shopt.extglob);
+                crate::glob::expand_glob(f, ctx.shopt.dotglob, ctx.shopt.nocaseglob, ctx.shopt.extglob, ctx.shopt.globstar);
             if !matches.is_empty() {
                 out.extend(matches);
                 continue;
@@ -666,6 +666,10 @@ enum ParamOp {
     Upper(bool),
     /// `${x,}` / `${x,,}` — lowercase (bool = all).
     Lower(bool),
+    /// `${!name}` — indirect expansion (look up variable by name).
+    Indirect,
+    /// `${var@Q}` — produce a string that re-parses to the original value.
+    QuoteEscape,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -692,6 +696,17 @@ fn parse_param(text: &str) -> (String, Option<String>, ParamOp) {
         && !rest.is_empty()
     {
         return (base_name(rest).to_owned(), split_index(rest), ParamOp::Length);
+    }
+    // `${!name}` — indirect expansion: look up the variable named by `name`.
+    if let Some(rest) = inner.strip_prefix('!')
+        && !rest.is_empty()
+    {
+        return (base_name(rest).to_owned(), split_index(rest), ParamOp::Indirect);
+    }
+    // `${var@Q}` — quote escaping.
+    if let Some(at_q) = inner.find("@Q") {
+        let name = &inner[..at_q];
+        return (base_name(name).to_owned(), split_index(name), ParamOp::QuoteEscape);
     }
     const OP_CHARS: [char; 11] = [':', '#', '%', '/', '=', '+', '?', '-', '^', ',', '['];
     let name_end = inner.find(OP_CHARS).unwrap_or(inner.len());
@@ -731,6 +746,7 @@ fn base_name(inner: &str) -> &str {
 fn parse_op(op: &str) -> ParamOp {
     match op.chars().next() {
         None => ParamOp::Normal,
+        Some('@') if op.len() >= 2 && op.as_bytes()[1] == b'Q' => ParamOp::QuoteEscape,
         Some(':') => match op.chars().nth(1) {
             Some('-') => ParamOp::Default(op[2..].to_owned(), true),
             Some('=') => ParamOp::Assign(op[2..].to_owned(), true),
@@ -976,6 +992,26 @@ fn apply_param_op(ctx: &mut ExpandCtx, name: &str, index: Option<String>, op: Pa
             };
             Ok(part_value(&Some(out), in_dquotes))
         }
+        ParamOp::Indirect => {
+            // `${!name}` — the value of `name` is the name of the variable to look up.
+            let inner_name = value.unwrap_or_default();
+            if inner_name.is_empty() {
+                if ctx.nounset {
+                    return Err(alloc::format!("cake: ${name}: invalid indirect expansion"));
+                }
+                return Ok(PartOut::Nothing);
+            }
+            let resolved = param_value(ctx, &inner_name);
+            if resolved.is_none() && ctx.nounset {
+                return Err(alloc::format!("cake: {inner_name}: unbound variable"));
+            }
+            Ok(part_value(&resolved, in_dquotes))
+        }
+        ParamOp::QuoteEscape => {
+            // `${var@Q}` — produce a string that re-parses to the original value.
+            let v = value.unwrap_or_default();
+            Ok(PartOut::Append(shell_quote(&v)))
+        }
         ParamOp::Normal => unreachable!(),
     }
 }
@@ -987,6 +1023,25 @@ fn expand_operand(ctx: &mut ExpandCtx, text: &str) -> Result<String, String> {
     }
     let fields = expand_plain_string(ctx, text)?;
     Ok(fields.join(" "))
+}
+
+/// Produce a shell-safe quoted string for `${var@Q}`.
+/// Always wraps in single quotes (escaping embedded `'` as `'\''`), matching
+/// bash's `@Q` behaviour.
+fn shell_quote(s: &str) -> String {
+    if s.is_empty() {
+        return String::new();
+    }
+    let mut out = String::from("'");
+    for c in s.chars() {
+        if c == '\'' {
+            out.push_str("'\\''");
+        } else {
+            out.push(c);
+        }
+    }
+    out.push('\'');
+    out
 }
 
 /// Parse `${x:off:len}` into (offset, length). Offsets may be negative.
