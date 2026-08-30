@@ -18,8 +18,8 @@ use std::path::PathBuf;
 
 use cake_platform::{
     ChildFd, Fd, FileInfo, FileOpenMode, Platform, PlatformError, ProcessError, ProcessGroupId,
-    ProcessHandle, Signal, SignalMask, SpawnConfig, Termios, TerminalSize, WaitOptions,
-    WaitStatus, XdgKind,
+    ProcessHandle, Signal, SignalMask, SpawnConfig, TerminalSize, Termios, WaitOptions, WaitStatus,
+    XdgKind,
 };
 use nix::unistd::{ForkResult, Pid};
 
@@ -67,8 +67,7 @@ impl Platform for UnixPlatform {
     // --- Process ---------------------------------------------------------
 
     fn spawn(&self, cfg: &SpawnConfig) -> Result<ProcessHandle, ProcessError> {
-        let path = CString::new(cfg.path.as_bytes())
-            .map_err(|_| ProcessError::ExecFailed)?;
+        let path = CString::new(cfg.path.as_bytes()).map_err(|_| ProcessError::ExecFailed)?;
         let argv: Vec<CString> = cfg
             .argv
             .iter()
@@ -83,9 +82,7 @@ impl Platform for UnixPlatform {
             .map_err(|_| ProcessError::ExecFailed)?;
 
         match unsafe { nix::unistd::fork() } {
-            Ok(ForkResult::Parent { child }) => {
-                Ok(ProcessHandle::new(child.as_raw()))
-            }
+            Ok(ForkResult::Parent { child }) => Ok(ProcessHandle::new(child.as_raw())),
             Ok(ForkResult::Child) => {
                 // 1. Process group.
                 if let Some(pgid) = cfg.pgroup {
@@ -114,12 +111,8 @@ impl Platform for UnixPlatform {
         }
     }
 
-    fn wait(
-        &self,
-        handle: &ProcessHandle,
-        opts: WaitOptions,
-    ) -> Result<WaitStatus, ProcessError> {
-        use nix::sys::wait::{waitpid, WaitPidFlag};
+    fn wait(&self, handle: &ProcessHandle, opts: WaitOptions) -> Result<WaitStatus, ProcessError> {
+        use nix::sys::wait::{WaitPidFlag, waitpid};
         let pid = Pid::from_raw(handle.pid());
         let mut flags = WaitPidFlag::empty();
         if opts.contains(WaitOptions::UNTRACED) {
@@ -132,9 +125,7 @@ impl Platform for UnixPlatform {
             flags.insert(WaitPidFlag::WNOHANG);
         }
         match waitpid(pid, Some(flags)) {
-            Ok(nix::sys::wait::WaitStatus::Exited(_, code)) => {
-                Ok(WaitStatus::Exited(code as u8))
-            }
+            Ok(nix::sys::wait::WaitStatus::Exited(_, code)) => Ok(WaitStatus::Exited(code as u8)),
             Ok(nix::sys::wait::WaitStatus::Signaled(_, sig, _)) => {
                 Ok(WaitStatus::Signaled(self.signal_from_number(sig as i32)))
             }
@@ -150,18 +141,16 @@ impl Platform for UnixPlatform {
 
     fn kill(&self, handle: &ProcessHandle, sig: Signal) -> Result<(), ProcessError> {
         let pid = Pid::from_raw(handle.pid());
-        nix::sys::signal::kill(pid, nix_signal(sig)).map_err(|e| {
-            ProcessError::Other(format!("kill failed: {e}"))
-        })
+        nix::sys::signal::kill(pid, nix_signal(sig))
+            .map_err(|e| ProcessError::Other(format!("kill failed: {e}")))
     }
 
     fn set_terminal_foreground(&self, pgid: ProcessGroupId) -> Result<(), PlatformError> {
         use std::os::fd::BorrowedFd;
         // SAFETY: fd 0 (stdin) is held open for the shell's lifetime.
         let stdin = unsafe { BorrowedFd::borrow_raw(0) };
-        nix::unistd::tcsetpgrp(stdin, Pid::from_raw(pgid.raw())).map_err(|e| {
-            PlatformError::Io(format!("tcsetpgrp failed: {e}"))
-        })
+        nix::unistd::tcsetpgrp(stdin, Pid::from_raw(pgid.raw()))
+            .map_err(|e| PlatformError::Io(format!("tcsetpgrp failed: {e}")))
     }
 
     fn current_process_group(&self) -> ProcessGroupId {
@@ -242,8 +231,7 @@ impl Platform for UnixPlatform {
 
     fn unblock_signals(&self, mask: &SignalMask) -> Result<(), PlatformError> {
         let old = unsafe { &*(mask.data().as_ptr() as *const libc::sigset_t) };
-        let ret =
-            unsafe { libc::pthread_sigmask(libc::SIG_SETMASK, old, core::ptr::null_mut()) };
+        let ret = unsafe { libc::pthread_sigmask(libc::SIG_SETMASK, old, core::ptr::null_mut()) };
         if ret != 0 {
             return Err(PlatformError::Io("pthread_sigmask failed".into()));
         }
@@ -317,8 +305,8 @@ impl Platform for UnixPlatform {
     }
 
     fn open_file(&self, path: &str, mode: FileOpenMode) -> Result<Fd, PlatformError> {
-        use std::os::fd::IntoRawFd;
         use std::fs::OpenOptions;
+        use std::os::fd::IntoRawFd;
         let mut opts = OpenOptions::new();
         match mode {
             FileOpenMode::Read => {
@@ -411,23 +399,23 @@ impl Platform for UnixPlatform {
 
     fn is_executable(&self, path: &str) -> bool {
         let p = std::path::Path::new(path);
-        p.is_file()
-            && {
-                use std::os::unix::fs::PermissionsExt;
-                p.metadata()
-                    .map(|m| m.permissions().mode() & 0o111 != 0)
-                    .unwrap_or(false)
-            }
+        p.is_file() && {
+            use std::os::unix::fs::PermissionsExt;
+            p.metadata()
+                .map(|m| m.permissions().mode() & 0o111 != 0)
+                .unwrap_or(false)
+        }
     }
 
     fn stat(&self, path: &str) -> FileInfo {
-        use std::os::unix::fs::PermissionsExt;
+        use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
         let p = std::path::Path::new(path);
         let mut info = FileInfo {
             exists: p.exists(),
             ..Default::default()
         };
-        let md = match std::fs::metadata(path) {
+        // Use symlink_metadata so -h/-L work correctly on symlinks
+        let md = match std::fs::symlink_metadata(path) {
             Ok(md) => md,
             Err(_) => return info,
         };
@@ -435,12 +423,40 @@ impl Platform for UnixPlatform {
         info.is_file = ft.is_file();
         info.is_dir = ft.is_dir();
         info.is_symlink = ft.is_symlink();
+        info.is_socket = ft.is_socket();
+        info.is_block_device = ft.is_block_device();
+        info.is_char_device = ft.is_char_device();
+        info.is_fifo = ft.is_fifo();
         info.size = md.len();
+
         let mode = md.permissions().mode();
         info.is_readable = mode & 0o444 != 0;
         info.is_writable = mode & 0o222 != 0;
         info.is_executable = mode & 0o111 != 0;
+        info.has_suid = mode & 0o4000 != 0;
+        info.has_sgid = mode & 0o2000 != 0;
+        info.has_sticky = mode & 0o1000 != 0;
+
+        info.uid = md.uid();
+        info.gid = md.gid();
+        info.mtime = md.mtime();
+        info.atime = md.atime();
+        info.dev = md.dev();
+        info.ino = md.ino();
+
         info
+    }
+
+    fn is_terminal_fd(&self, fd: u32) -> bool {
+        unsafe { libc::isatty(fd as i32) != 0 }
+    }
+
+    fn geteuid(&self) -> u32 {
+        unsafe { libc::geteuid() }
+    }
+
+    fn getegid(&self) -> u32 {
+        unsafe { libc::getegid() }
     }
 
     fn read_dir(&self, path: &str) -> Result<Vec<String>, PlatformError> {
@@ -511,8 +527,9 @@ fn nix_signal(sig: Signal) -> nix::sys::signal::Signal {
         Signal::WindowChange => nix::sys::signal::Signal::SIGWINCH,
         Signal::User1 => nix::sys::signal::Signal::SIGUSR1,
         Signal::User2 => nix::sys::signal::Signal::SIGUSR2,
-        Signal::Other(n) => nix::sys::signal::Signal::try_from(n)
-            .unwrap_or(nix::sys::signal::Signal::SIGTERM),
+        Signal::Other(n) => {
+            nix::sys::signal::Signal::try_from(n).unwrap_or(nix::sys::signal::Signal::SIGTERM)
+        }
     }
 }
 

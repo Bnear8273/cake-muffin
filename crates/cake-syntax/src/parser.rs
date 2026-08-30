@@ -72,27 +72,34 @@ impl<'a> Parser<'a> {
 
     fn advance(&mut self) {
         self.current = self.peeked.take().unwrap_or_else(|| {
-            self.lexer
-                .next_token()
-                .unwrap_or_else(|e| {
-                    self.errors.push(e);
-                    Token::new(TokenKind::Eof, Span::UNKNOWN, String::new())
-                })
+            self.lexer.next_token().unwrap_or_else(|e| {
+                self.errors.push(e);
+                Token::new(TokenKind::Eof, Span::UNKNOWN, String::new())
+            })
         });
     }
 
     fn peek(&mut self) -> TokenKind {
         if self.peeked.is_none() {
-            let t = self
-                .lexer
-                .next_token()
-                .unwrap_or_else(|e| {
-                    self.errors.push(e);
-                    Token::new(TokenKind::Eof, Span::UNKNOWN, String::new())
-                });
+            let t = self.lexer.next_token().unwrap_or_else(|e| {
+                self.errors.push(e);
+                Token::new(TokenKind::Eof, Span::UNKNOWN, String::new())
+            });
             self.peeked = Some(t);
         }
         self.peeked.as_ref().unwrap().kind
+    }
+
+    /// The text of the peeked token, if any (peeks like [`Parser::peek`]).
+    fn peeked_text(&mut self) -> Option<String> {
+        if self.peeked.is_none() {
+            let t = self.lexer.next_token().unwrap_or_else(|e| {
+                self.errors.push(e);
+                Token::new(TokenKind::Eof, Span::UNKNOWN, String::new())
+            });
+            self.peeked = Some(t);
+        }
+        self.peeked.as_ref().map(|t| t.text.clone())
     }
 
     fn set_cmd(&mut self) {
@@ -337,6 +344,8 @@ impl<'a> Parser<'a> {
                     "while" => Some(self.parse_while_or_until(false)?),
                     "until" => Some(self.parse_while_or_until(true)?),
                     "case" => Some(self.parse_case()?),
+                    "select" => Some(self.parse_select()?),
+                    "coproc" => Some(self.parse_coproc()?),
                     "function" => Some(self.parse_function()?),
                     "{" => Some(self.parse_block()?),
                     _ => {
@@ -346,7 +355,11 @@ impl<'a> Parser<'a> {
                         // tokenized with command context here).  `(` is still
                         // an operator in arg context.
                         if self.current.kind == TokenKind::Word
-                            && self.current.text.chars().all(|c| c.is_alphanumeric() || c == '_')
+                            && self
+                                .current
+                                .text
+                                .chars()
+                                .all(|c| c.is_alphanumeric() || c == '_')
                         {
                             self.set_arg();
                             if self.peek() == TokenKind::Lparen {
@@ -374,8 +387,7 @@ impl<'a> Parser<'a> {
         self.skip_optional_sep();
         self.expect_keyword("then")?;
         let body = self.parse_list(|t| {
-            t.kind == TokenKind::Word
-                && matches!(t.text.as_str(), "else" | "elif" | "fi")
+            t.kind == TokenKind::Word && matches!(t.text.as_str(), "else" | "elif" | "fi")
         })?;
         clauses.push(IfClause { cond, body });
 
@@ -389,8 +401,7 @@ impl<'a> Parser<'a> {
                 self.skip_optional_sep();
                 self.expect_keyword("then")?;
                 let body = self.parse_list(|t| {
-                    t.kind == TokenKind::Word
-                        && matches!(t.text.as_str(), "else" | "elif" | "fi")
+                    t.kind == TokenKind::Word && matches!(t.text.as_str(), "else" | "elif" | "fi")
                 })?;
                 clauses.push(IfClause { cond, body });
             } else {
@@ -403,9 +414,7 @@ impl<'a> Parser<'a> {
         let else_body = if self.current.kind == TokenKind::Word && self.current.text == "else" {
             self.advance();
             self.skip_optional_sep();
-            Some(self.parse_list(|t| {
-                t.kind == TokenKind::Word && t.text == "fi"
-            })?)
+            Some(self.parse_list(|t| t.kind == TokenKind::Word && t.text == "fi")?)
         } else {
             None
         };
@@ -423,6 +432,11 @@ impl<'a> Parser<'a> {
     fn parse_for(&mut self) -> Result<CommandKind, ()> {
         self.advance(); // consume 'for'
         let start = self.current.span.start;
+
+        // C-style for: for (( init; cond; incr )); do ...
+        if self.current.kind == TokenKind::ArithOpen {
+            return self.parse_c_style_for(start);
+        }
 
         // Variable name.
         let var = self.expect_word()?;
@@ -448,9 +462,7 @@ impl<'a> Parser<'a> {
         // A `;` before `do` is optional.
         self.skip_optional_sep();
         self.expect_keyword("do")?;
-        let body = self.parse_list(|t| {
-            t.kind == TokenKind::Word && t.text == "done"
-        })?;
+        let body = self.parse_list(|t| t.kind == TokenKind::Word && t.text == "done")?;
         self.skip_optional_sep();
         self.expect_keyword("done")?;
 
@@ -462,22 +474,175 @@ impl<'a> Parser<'a> {
         }))
     }
 
+    fn parse_c_style_for(&mut self, start: u32) -> Result<CommandKind, ()> {
+        self.advance(); // consume ((
+
+        // Collect raw text between (( and )), tracking parenthesis depth
+        let tok_start = self.current.span.start;
+        self.set_arith();
+        let mut depth: i32 = 0;
+        loop {
+            self.advance();
+            match self.current.kind {
+                TokenKind::Lparen => depth += 1,
+                TokenKind::Rparen => {
+                    if depth == 0 {
+                        // Check for closing ))
+                        if self.peek() == TokenKind::Rparen {
+                            let text = self.src
+                                [tok_start as usize..self.current.span.start as usize]
+                                .to_owned();
+                            self.advance(); // consume first )
+                            self.advance(); // consume token after ))
+                            self.set_cmd(); // restore command context for body
+                            // Split text on ';' to get init, cond, incr
+                            let parts = split_arith_for(&text);
+                            let init = parts.0;
+                            let cond = parts.1;
+                            let incr = parts.2;
+                            // Skip optional separator before 'do'
+                            self.skip_optional_sep();
+                            self.expect_keyword("do")?;
+                            let body =
+                                self.parse_list(|t| t.kind == TokenKind::Word && t.text == "done")?;
+                            self.skip_optional_sep();
+                            self.expect_keyword("done")?;
+                            return Ok(CommandKind::CStyleFor(CStyleForCommand {
+                                init,
+                                cond,
+                                incr,
+                                body,
+                                span: Span::new(start, self.current.span.start),
+                            }));
+                        }
+                        // Single ) inside arithmetic, not balanced
+                        depth -= 1;
+                    } else {
+                        depth -= 1;
+                    }
+                }
+                TokenKind::Eof => {
+                    self.errors.push(ParseError::incomplete(
+                        "unexpected EOF in C-style for loop",
+                        self.current.span.start,
+                    ));
+                    return Err(());
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn parse_select(&mut self) -> Result<CommandKind, ()> {
+        self.advance(); // consume 'select'
+        let start = self.current.span.start;
+
+        // Variable name.
+        let var = self.expect_word()?;
+
+        // Optional 'in word ...'
+        let in_words = if self.current.kind == TokenKind::Word && self.current.text == "in" {
+            self.advance();
+            let mut words = Vec::new();
+            while self.current.kind == TokenKind::Word {
+                words.push(self.word_from_token(&self.current));
+                self.advance();
+            }
+            Some(words)
+        } else {
+            None
+        };
+
+        // 'do' body 'done'
+        self.skip_optional_sep();
+        self.expect_keyword("do")?;
+        let body = self.parse_list(|t| t.kind == TokenKind::Word && t.text == "done")?;
+        self.skip_optional_sep();
+        self.expect_keyword("done")?;
+
+        Ok(CommandKind::Select(SelectCommand {
+            var,
+            in_words,
+            body,
+            span: Span::new(start, self.current.span.start),
+        }))
+    }
+
+    fn parse_coproc(&mut self) -> Result<CommandKind, ()> {
+        let start = self.current.span.start;
+        self.advance(); // consume 'coproc'
+
+        // Bash's rule: the first word after `coproc` is the coproc NAME
+        // only when it is followed by a compound-command opener (`{`, `(`,
+        // `for`, `if`, `case`, `while`, `until`, `select`, ...). Otherwise
+        // (e.g. `coproc echo hi` or `coproc mycat cat`) the first word is
+        // just the command name.
+        let name = if self.current.kind == TokenKind::Word
+            && self
+                .current
+                .text
+                .chars()
+                .all(|c| c.is_alphanumeric() || c == '_')
+            && self.followed_by_compound_opener()
+        {
+            let n = self.current.text.clone();
+            self.advance(); // consume the name
+            Some(n)
+        } else {
+            None
+        };
+
+        // Now parse the command body
+        let body = self.parse_command()?;
+
+        Ok(CommandKind::Coproc(CoprocCommand {
+            name,
+            body: Box::new(body),
+            span: Span::new(start, self.current.span.start),
+        }))
+    }
+
+    /// True if the token after the current one begins a compound command
+    /// (`{`, `(`, `for`, `if`, `case`, `while`, `until`, `select`), in
+    /// which case the current word is a coproc name.
+    fn followed_by_compound_opener(&mut self) -> bool {
+        let next = self.peek();
+        matches!(
+            next,
+            TokenKind::Lbrace
+                | TokenKind::Lparen
+                | TokenKind::ArithOpen
+                | TokenKind::DoubleBracketOpen
+        ) || self.peeked_text().is_some_and(|t| {
+            matches!(
+                t.as_str(),
+                "for" | "if" | "case" | "while" | "until" | "select"
+            )
+        })
+    }
+
     fn parse_while_or_until(&mut self, is_until: bool) -> Result<CommandKind, ()> {
         self.advance(); // consume 'while'/'until'
         let start = self.current.span.start;
         let cond = self.parse_and_or_list()?;
         self.skip_optional_sep();
         self.expect_keyword("do")?;
-        let body = self.parse_list(|t| {
-            t.kind == TokenKind::Word && t.text == "done"
-        })?;
+        let body = self.parse_list(|t| t.kind == TokenKind::Word && t.text == "done")?;
         self.skip_optional_sep();
         self.expect_keyword("done")?;
 
         let cmd = if is_until {
-            CommandKind::Until(WhileCommand { cond, body, span: Span::new(start, self.current.span.start) })
+            CommandKind::Until(WhileCommand {
+                cond,
+                body,
+                span: Span::new(start, self.current.span.start),
+            })
         } else {
-            CommandKind::While(WhileCommand { cond, body, span: Span::new(start, self.current.span.start) })
+            CommandKind::While(WhileCommand {
+                cond,
+                body,
+                span: Span::new(start, self.current.span.start),
+            })
         };
         Ok(cmd)
     }
@@ -506,7 +671,10 @@ impl<'a> Parser<'a> {
             }
             if self.current.kind == TokenKind::Eof {
                 self.lexer.ctx.in_case = false;
-                self.errors.push(ParseError::incomplete("unexpected EOF in case statement", self.current.span.start));
+                self.errors.push(ParseError::incomplete(
+                    "unexpected EOF in case statement",
+                    self.current.span.start,
+                ));
                 return Err(());
             }
 
@@ -520,7 +688,10 @@ impl<'a> Parser<'a> {
             }
             // Expect `)` after patterns.
             if self.current.kind != TokenKind::Rparen {
-                self.errors.push(ParseError::new("expected `)` after case pattern", self.current.span));
+                self.errors.push(ParseError::new(
+                    "expected `)` after case pattern",
+                    self.current.span,
+                ));
                 return Err(());
             }
             self.advance(); // consume )
@@ -528,7 +699,10 @@ impl<'a> Parser<'a> {
             let body = self.parse_list(|t| t.kind == TokenKind::SemiSemi)?;
             // Expect `;;`.
             if self.current.kind != TokenKind::SemiSemi {
-                self.errors.push(ParseError::new("expected `;;` after case arm", self.current.span));
+                self.errors.push(ParseError::new(
+                    "expected `;;` after case arm",
+                    self.current.span,
+                ));
                 return Err(());
             }
             self.advance(); // consume ;;
@@ -586,10 +760,13 @@ impl<'a> Parser<'a> {
         self.set_cmd();
         if self.current.kind != TokenKind::Rbrace {
             if self.current.kind == TokenKind::Eof {
-                self.errors
-                    .push(ParseError::incomplete("unexpected EOF, expected `}`", self.current.span.start));
+                self.errors.push(ParseError::incomplete(
+                    "unexpected EOF, expected `}`",
+                    self.current.span.start,
+                ));
             } else {
-                self.errors.push(ParseError::new("expected `}`", self.current.span));
+                self.errors
+                    .push(ParseError::new("expected `}`", self.current.span));
             }
             return Err(());
         }
@@ -607,10 +784,13 @@ impl<'a> Parser<'a> {
         self.set_cmd();
         if self.current.kind != TokenKind::Rparen {
             if self.current.kind == TokenKind::Eof {
-                self.errors
-                    .push(ParseError::incomplete("unexpected EOF, expected `)`", self.current.span.start));
+                self.errors.push(ParseError::incomplete(
+                    "unexpected EOF, expected `)`",
+                    self.current.span.start,
+                ));
             } else {
-                self.errors.push(ParseError::new("expected `)`", self.current.span));
+                self.errors
+                    .push(ParseError::new("expected `)`", self.current.span));
             }
             return Err(());
         }
@@ -636,7 +816,9 @@ impl<'a> Parser<'a> {
                     if depth == 0 {
                         // Check for closing ))
                         if self.peek() == TokenKind::Rparen {
-                            let text = self.src[tok_start as usize..self.current.span.start as usize].to_owned();
+                            let text = self.src
+                                [tok_start as usize..self.current.span.start as usize]
+                                .to_owned();
                             self.advance(); // consume first )
                             let span = Span::new(start, self.current.span.start);
                             self.advance(); // consume token after ))
@@ -649,10 +831,16 @@ impl<'a> Parser<'a> {
                     }
                 }
                 TokenKind::Eof => {
-                    self.errors
-                        .push(ParseError::incomplete("unexpected EOF in arithmetic command", self.current.span.start));
-                    let text = self.src[tok_start as usize..self.current.span.start as usize].to_owned();
-                    return Ok(CommandKind::Arith(ArithCommand { text, span: Span::new(start, self.current.span.start) }));
+                    self.errors.push(ParseError::incomplete(
+                        "unexpected EOF in arithmetic command",
+                        self.current.span.start,
+                    ));
+                    let text =
+                        self.src[tok_start as usize..self.current.span.start as usize].to_owned();
+                    return Ok(CommandKind::Arith(ArithCommand {
+                        text,
+                        span: Span::new(start, self.current.span.start),
+                    }));
                 }
                 _ => {}
             }
@@ -669,7 +857,8 @@ impl<'a> Parser<'a> {
             self.advance();
             match self.current.kind {
                 TokenKind::DoubleBracketClose => {
-                    let text = self.src[tok_start as usize..self.current.span.start as usize].to_owned();
+                    let text =
+                        self.src[tok_start as usize..self.current.span.start as usize].to_owned();
                     self.advance(); // consume ]]
                     return Ok(CommandKind::Cond(CondCommand {
                         text,
@@ -681,8 +870,12 @@ impl<'a> Parser<'a> {
                         "unexpected EOF in conditional expression",
                         self.current.span.start,
                     ));
-                    let text = self.src[tok_start as usize..self.current.span.start as usize].to_owned();
-                    return Ok(CommandKind::Cond(CondCommand { text, span: Span::new(start, self.current.span.start) }));
+                    let text =
+                        self.src[tok_start as usize..self.current.span.start as usize].to_owned();
+                    return Ok(CommandKind::Cond(CondCommand {
+                        text,
+                        span: Span::new(start, self.current.span.start),
+                    }));
                 }
                 _ => {}
             }
@@ -768,7 +961,13 @@ impl<'a> Parser<'a> {
                 Span::new(start + eq_pos as u32 + 1, self.current.span.end),
             );
             self.advance();
-            (base, AssignmentValue::Index { index, value: rhs_word })
+            (
+                base,
+                AssignmentValue::Index {
+                    index,
+                    value: rhs_word,
+                },
+            )
         } else if self.peek() == TokenKind::Lparen {
             // Array assignment: a=(x y z); the token was just `a=`.
             self.advance(); // consume the `a=` token
@@ -791,7 +990,10 @@ impl<'a> Parser<'a> {
             (name, AssignmentValue::Array(words))
         } else {
             let rhs = &text[eq_pos + 1..];
-            let word = parse_word(rhs, Span::new(start + eq_pos as u32 + 1, self.current.span.end));
+            let word = parse_word(
+                rhs,
+                Span::new(start + eq_pos as u32 + 1, self.current.span.end),
+            );
             self.advance();
             (name, AssignmentValue::Word(word))
         };
@@ -977,8 +1179,10 @@ impl<'a> Parser<'a> {
             self.advance();
             Ok(())
         } else if self.current.kind == TokenKind::Eof {
-            self.errors
-                .push(ParseError::incomplete(alloc::format!("unexpected EOF, expected `{kw}`"), self.current.span.start));
+            self.errors.push(ParseError::incomplete(
+                alloc::format!("unexpected EOF, expected `{kw}`"),
+                self.current.span.start,
+            ));
             Err(())
         } else {
             self.errors.push(ParseError::new(
@@ -1004,8 +1208,10 @@ impl<'a> Parser<'a> {
             self.advance();
             Ok(text)
         } else if self.current.kind == TokenKind::Eof {
-            self.errors
-                .push(ParseError::incomplete("unexpected EOF, expected a word", self.current.span.start));
+            self.errors.push(ParseError::incomplete(
+                "unexpected EOF, expected a word",
+                self.current.span.start,
+            ));
             Err(())
         } else {
             self.errors.push(ParseError::new(
@@ -1023,10 +1229,8 @@ impl<'a> Parser<'a> {
             self.advance();
             Ok(w)
         } else {
-            self.errors.push(ParseError::new(
-                "expected a word",
-                self.current.span,
-            ));
+            self.errors
+                .push(ParseError::new("expected a word", self.current.span));
             Err(())
         }
     }
@@ -1040,4 +1244,40 @@ fn unquote_heredoc_delimiter(text: &str) -> String {
     } else {
         text.to_owned()
     }
+}
+
+/// Split the body of `(( expr1; expr2; expr3 ))` into (init, cond, incr).
+/// Semicolons inside balanced parentheses are not treated as separators.
+/// Any of the three parts may be empty (e.g. `(( ; ; ))`).
+fn split_arith_for(text: &str) -> (String, String, String) {
+    let bytes = text.as_bytes();
+    let mut parts: [String; 3] = [String::new(), String::new(), String::new()];
+    let mut part_idx: usize = 0;
+    let mut depth: i32 = 0;
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'(' => {
+                depth += 1;
+                parts[part_idx].push('(');
+            }
+            b')' => {
+                depth -= 1;
+                parts[part_idx].push(')');
+            }
+            b';' if depth == 0 => {
+                part_idx = (part_idx + 1).min(2);
+            }
+            c => {
+                parts[part_idx].push(c as char);
+            }
+        }
+        i += 1;
+    }
+    // Trim whitespace from each part
+    (
+        parts[0].trim().to_owned(),
+        parts[1].trim().to_owned(),
+        parts[2].trim().to_owned(),
+    )
 }

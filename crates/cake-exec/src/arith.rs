@@ -439,7 +439,17 @@ impl<'a> ArithParser<'a> {
         }
         // Variable name.
         if let Some(name) = self.try_read_name() {
-            return Ok(self.read_var(&name).unwrap_or(0));
+            let val = self.read_var(&name).unwrap_or(0);
+            // Postfix `name++` / `name--`: yield the old value, then assign.
+            if self.eat_str("++") {
+                self.assigns.push((name, val + 1));
+                return Ok(val);
+            }
+            if self.eat_str("--") {
+                self.assigns.push((name, val - 1));
+                return Ok(val);
+            }
+            return Ok(val);
         }
         Err(self.error("unexpected character in arithmetic"))
     }

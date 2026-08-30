@@ -7,10 +7,10 @@
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use cake_platform::{ChildFd, FileOpenMode, Fd};
+use cake_platform::{ChildFd, Fd, FileOpenMode};
 use cake_syntax::{Redirect, RedirectKind, RedirectTarget};
 
-use crate::expand::{expand_redirect_word, ExpandCtx};
+use crate::expand::{ExpandCtx, expand_redirect_word};
 
 /// The resolved standard fds for one command.
 #[derive(Clone)]
@@ -80,7 +80,10 @@ fn apply_redirect(ctx: &mut ExpandCtx, r: &Redirect, fds: &mut CommandFds) -> Re
             | RedirectKind::AndOut
             | RedirectKind::AndAppend
     );
-    let slot = Slot::from_fd(r.fd.unwrap_or(if output_default { 1 } else { 0 }), output_default)?;
+    let slot = Slot::from_fd(
+        r.fd.unwrap_or(if output_default { 1 } else { 0 }),
+        output_default,
+    )?;
 
     match (&r.kind, &r.target) {
         // File redirects: open in the parent, pass the fd to the child.
@@ -168,10 +171,7 @@ fn apply_redirect(ctx: &mut ExpandCtx, r: &Redirect, fds: &mut CommandFds) -> Re
         }
         // M2c will add process substitution and fd>2 support.
         _ => {
-            return Err(alloc::format!(
-                "cake: unsupported redirection {:?}",
-                r.kind
-            ));
+            return Err(alloc::format!("cake: unsupported redirection {:?}", r.kind));
         }
     }
     Ok(())

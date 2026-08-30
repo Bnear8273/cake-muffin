@@ -173,7 +173,11 @@ impl<'a> Lexer<'a> {
                 self.advance();
                 return Ok(self.mk(TokenKind::ArithOpen, start));
             }
-            let kind = if c == '(' { TokenKind::Lparen } else { TokenKind::Rparen };
+            let kind = if c == '(' {
+                TokenKind::Lparen
+            } else {
+                TokenKind::Rparen
+            };
             return Ok(self.mk(kind, start));
         }
 
@@ -182,7 +186,10 @@ impl<'a> Lexer<'a> {
             match c {
                 '{' => {
                     // `{` is a reserved word only when followed by a blank.
-                    if matches!(self.peek2(), None | Some(' ' | '\t' | '\n' | ';' | '&' | '|')) {
+                    if matches!(
+                        self.peek2(),
+                        None | Some(' ' | '\t' | '\n' | ';' | '&' | '|')
+                    ) {
                         let start = self.pos;
                         self.advance();
                         return Ok(self.mk(TokenKind::Lbrace, start));
@@ -198,7 +205,10 @@ impl<'a> Lexer<'a> {
                     // `!` negates the next pipeline only when followed by a
                     // blank or at the end of input; `!(pattern)` (no space)
                     // is an extglob opener and stays a word.
-                    if matches!(self.peek2(), None | Some(' ' | '\t' | '\n' | ';' | '&' | '|')) {
+                    if matches!(
+                        self.peek2(),
+                        None | Some(' ' | '\t' | '\n' | ';' | '&' | '|')
+                    ) {
                         self.advance();
                         return Ok(self.mk(TokenKind::Bang, start));
                     }
@@ -227,7 +237,14 @@ impl<'a> Lexer<'a> {
         if (self.ctx.in_cond || self.ctx.in_arith) && matches!(c, '(' | ')') {
             let start = self.pos;
             self.advance();
-            return Ok(self.mk(if c == '(' { TokenKind::Lparen } else { TokenKind::Rparen }, start));
+            return Ok(self.mk(
+                if c == '(' {
+                    TokenKind::Lparen
+                } else {
+                    TokenKind::Rparen
+                },
+                start,
+            ));
         }
 
         // Anything else: a word (possibly `name=value` in command position).
@@ -238,7 +255,11 @@ impl<'a> Lexer<'a> {
     ///
     /// `pos` must be positioned just after the `<<WORD` tokens.
     /// Returns the body without the final delimiter line.
-    pub fn read_heredoc_body(&mut self, delimiter: &str, strip_tabs: bool) -> Result<String, ParseError> {
+    pub fn read_heredoc_body(
+        &mut self,
+        delimiter: &str,
+        strip_tabs: bool,
+    ) -> Result<String, ParseError> {
         let mut out = String::new();
         loop {
             if self.at_end() {
@@ -279,7 +300,11 @@ impl<'a> Lexer<'a> {
     }
 
     fn mk(&self, kind: TokenKind, start: Offset) -> Token {
-        Token::new(kind, self.span_from(start), self.src[start as usize..self.pos as usize].to_owned())
+        Token::new(
+            kind,
+            self.span_from(start),
+            self.src[start as usize..self.pos as usize].to_owned(),
+        )
     }
 
     // --- operator readers ---
@@ -423,6 +448,15 @@ impl<'a> Lexer<'a> {
 
             // End of word: unquoted metachar at top level.
             if !in_dquote && is_metachar(c) {
+                // In `(( ... ))` and `[[ ... ]]`, `<`/`>` are arithmetic /
+                // comparison operators, not redirections or word
+                // terminators; the arith/cond parsers re-tokenize the raw
+                // text themselves, so lex them as ordinary word chars to
+                // make progress.
+                if (self.ctx.in_arith || self.ctx.in_cond) && matches!(c, '<' | '>') {
+                    self.advance();
+                    continue;
+                }
                 // `<(cmd)` / `>(cmd)` process substitution stays in the word.
                 if (c == '<' || c == '>') && self.rest()[1..].starts_with('(') {
                     self.advance(); // < or >
@@ -441,7 +475,10 @@ impl<'a> Lexer<'a> {
             // expansion time).
             if !in_dquote && c == '(' && !self.ctx.in_redir {
                 let prev = (self.pos > 0).then(|| self.src.as_bytes()[self.pos as usize - 1]);
-                if matches!(prev, Some(b'?') | Some(b'*') | Some(b'+') | Some(b'@') | Some(b'!')) {
+                if matches!(
+                    prev,
+                    Some(b'?') | Some(b'*') | Some(b'+') | Some(b'@') | Some(b'!')
+                ) {
                     self.advance(); // (
                     self.skip_command_subst_after_open()?;
                     continue;
@@ -515,7 +552,10 @@ impl<'a> Lexer<'a> {
                                 }
                             }
                             if !closed {
-                                return Err(ParseError::incomplete("unterminated quoted string", self.pos));
+                                return Err(ParseError::incomplete(
+                                    "unterminated quoted string",
+                                    self.pos,
+                                ));
                             }
                         }
                         _ => {}
@@ -537,7 +577,11 @@ impl<'a> Lexer<'a> {
             && let Some(eq) = text.find('=')
             && is_assignment_target(&text[..eq])
         {
-            return Ok(Token::new(TokenKind::Assignment, self.span_from(start), text));
+            return Ok(Token::new(
+                TokenKind::Assignment,
+                self.span_from(start),
+                text,
+            ));
         }
 
         Ok(Token::new(TokenKind::Word, self.span_from(start), text))
@@ -555,7 +599,10 @@ impl<'a> Lexer<'a> {
                 return Ok(());
             }
         }
-        Err(ParseError::incomplete("unterminated quoted string", self.pos))
+        Err(ParseError::incomplete(
+            "unterminated quoted string",
+            self.pos,
+        ))
     }
 
     /// Scan a double-quoted string body. `self.pos` is just after `"`.
@@ -567,30 +614,31 @@ impl<'a> Lexer<'a> {
                         self.advance();
                     }
                 }
-                '$' => {
-                    match self.peek() {
-                        Some('(') => {
+                '$' => match self.peek() {
+                    Some('(') => {
+                        self.advance();
+                        if self.peek() == Some('(') {
                             self.advance();
-                            if self.peek() == Some('(') {
-                                self.advance();
-                                self.skip_arith()?;
-                            } else {
-                                self.skip_command_subst_after_open()?;
-                            }
+                            self.skip_arith()?;
+                        } else {
+                            self.skip_command_subst_after_open()?;
                         }
-                        Some('{') => {
-                            self.advance();
-                            self.skip_braced()?;
-                        }
-                        _ => {}
                     }
-                }
+                    Some('{') => {
+                        self.advance();
+                        self.skip_braced()?;
+                    }
+                    _ => {}
+                },
                 '`' => self.skip_backtick()?,
                 '"' => return Ok(()),
                 _ => {}
             }
         }
-        Err(ParseError::incomplete("unterminated quoted string", self.pos))
+        Err(ParseError::incomplete(
+            "unterminated quoted string",
+            self.pos,
+        ))
     }
 
     fn skip_backtick(&mut self) -> Result<(), ParseError> {
@@ -606,7 +654,10 @@ impl<'a> Lexer<'a> {
                 _ => {}
             }
         }
-        Err(ParseError::incomplete("unexpected EOF while looking for matching `'`", self.pos))
+        Err(ParseError::incomplete(
+            "unexpected EOF while looking for matching `'`",
+            self.pos,
+        ))
     }
 
     fn skip_ansi_c(&mut self) -> Result<(), ParseError> {
@@ -622,7 +673,10 @@ impl<'a> Lexer<'a> {
                 _ => {}
             }
         }
-        Err(ParseError::incomplete("unterminated quoted string", self.pos))
+        Err(ParseError::incomplete(
+            "unterminated quoted string",
+            self.pos,
+        ))
     }
 
     /// `self.pos` is just after `$(` — scan to the matching `)`.
@@ -702,7 +756,10 @@ impl<'a> Lexer<'a> {
                         // `(` which incremented depth. depth==0 here means we
                         // saw the first closing paren of the outer `))`.
                         // Handle `))` strictly.
-                        return Err(ParseError::new("arithmetic: expected '))'", Span::at(self.pos)));
+                        return Err(ParseError::new(
+                            "arithmetic: expected '))'",
+                            Span::at(self.pos),
+                        ));
                     }
                     depth -= 1;
                 }

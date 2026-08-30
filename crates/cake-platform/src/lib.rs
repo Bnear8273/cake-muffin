@@ -222,6 +222,24 @@ pub struct FileInfo {
     pub is_writable: bool,
     pub is_executable: bool,
     pub size: u64,
+    // File type flags
+    pub is_socket: bool,
+    pub is_block_device: bool,
+    pub is_char_device: bool,
+    pub is_fifo: bool,
+    // Permission bits
+    pub has_suid: bool,
+    pub has_sgid: bool,
+    pub has_sticky: bool,
+    // Ownership
+    pub uid: u32,
+    pub gid: u32,
+    // Timestamps (seconds since epoch)
+    pub mtime: i64,
+    pub atime: i64,
+    // Identity (for -ef)
+    pub dev: u64,
+    pub ino: u64,
 }
 
 /// Configuration for spawning a child process.
@@ -373,6 +391,12 @@ pub trait Platform: Sync {
     fn is_executable(&self, path: &str) -> bool;
     /// Filesystem facts for test operators.
     fn stat(&self, path: &str) -> FileInfo;
+    /// True if `fd` refers to a terminal (isatty).
+    fn is_terminal_fd(&self, fd: u32) -> bool;
+    /// Get the effective user ID.
+    fn geteuid(&self) -> u32;
+    /// Get the effective group ID.
+    fn getegid(&self) -> u32;
     /// List the entry names in `path` (glob expansion support).
     fn read_dir(&self, path: &str) -> Result<Vec<String>, PlatformError>;
     fn xdg_dir(&self, kind: XdgKind) -> String;
@@ -430,6 +454,8 @@ pub fn try_get() -> Option<&'static dyn Platform> {
 pub fn with_signals_blocked<F: FnOnce() -> T, T>(sigs: &[Signal], f: F) -> T {
     let mask = get().block_signals(sigs).expect("block_signals failed");
     let result = f();
-    get().unblock_signals(&mask).expect("unblock_signals failed");
+    get()
+        .unblock_signals(&mask)
+        .expect("unblock_signals failed");
     result
 }

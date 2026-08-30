@@ -45,7 +45,12 @@ impl Highlighter for CakeHelper {
         };
         Cow::Owned(cake_highlight::highlight_line(line, &found))
     }
-    fn highlight_char(&self, _line: &str, _pos: usize, _kind: rustyline::highlight::CmdKind) -> bool {
+    fn highlight_char(
+        &self,
+        _line: &str,
+        _pos: usize,
+        _kind: rustyline::highlight::CmdKind,
+    ) -> bool {
         true
     }
     fn highlight_hint<'h>(&self, hint: &'h str) -> Cow<'h, str> {
@@ -89,7 +94,10 @@ impl Hinter for CakeHelper {
 }
 
 impl Validator for CakeHelper {
-    fn validate(&self, _ctx: &mut rustyline::validate::ValidationContext) -> rustyline::Result<rustyline::validate::ValidationResult> {
+    fn validate(
+        &self,
+        _ctx: &mut rustyline::validate::ValidationContext,
+    ) -> rustyline::Result<rustyline::validate::ValidationResult> {
         Ok(rustyline::validate::ValidationResult::Valid(None))
     }
 }
@@ -150,13 +158,16 @@ fn complete_in(exec: &Executor, line: &str, pos: usize) -> (usize, Vec<Pair>) {
         CompleteKind::File => {
             // Split the word into (dir, base) around the last path separator.
             let sep = cake_platform::get().path_separator();
-            let (dir, base, dir_prefix) = match word.rfind(|c| cake_platform::get().is_path_separator(c)) {
-                Some(0) => {
-                    (sep.to_string(), &word[1..], sep.to_string())
-                }
-                Some(i) => (word[..i].to_string(), &word[i + 1..], word[..=i].to_string()),
-                None => (String::from("."), word, String::new()),
-            };
+            let (dir, base, dir_prefix) =
+                match word.rfind(|c| cake_platform::get().is_path_separator(c)) {
+                    Some(0) => (sep.to_string(), &word[1..], sep.to_string()),
+                    Some(i) => (
+                        word[..i].to_string(),
+                        &word[i + 1..],
+                        word[..=i].to_string(),
+                    ),
+                    None => (String::from("."), word, String::new()),
+                };
             let mut cands: Vec<String> = Vec::new();
             if let Ok(rd) = std::fs::read_dir(&dir) {
                 for e in rd.flatten() {
@@ -382,11 +393,7 @@ fn ps(exec: &Executor, name: &str, default: &str) -> String {
 /// The primary prompt: an explicit `PS1` wins, otherwise the current path
 /// (abbreviated to `~` under `$HOME`), falling back to `$ ` without `PWD`.
 fn prompt1(exec: &Executor) -> String {
-    if let Some(ps1) = exec
-        .env
-        .get("PS1")
-        .filter(|v| !v.value().is_empty())
-    {
+    if let Some(ps1) = exec.env.get("PS1").filter(|v| !v.value().is_empty()) {
         return ps1.value().to_owned();
     }
     match exec.env.get("PWD") {

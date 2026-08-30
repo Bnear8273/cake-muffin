@@ -45,16 +45,16 @@ fn simple_words() {
 #[test]
 fn operators() {
     let t = tokenize("a && b || c | d ; e & f");
-    assert_eq!(t[0].kind, TokenKind::Word);  // a
+    assert_eq!(t[0].kind, TokenKind::Word); // a
     assert_eq!(t[1].kind, TokenKind::AndAnd); // &&
-    assert_eq!(t[2].kind, TokenKind::Word);  // b
-    assert_eq!(t[3].kind, TokenKind::OrOr);  // ||
-    assert_eq!(t[4].kind, TokenKind::Word);  // c
-    assert_eq!(t[5].kind, TokenKind::Pipe);  // |
-    assert_eq!(t[6].kind, TokenKind::Word);  // d
-    assert_eq!(t[7].kind, TokenKind::Semi);  // ;
-    assert_eq!(t[8].kind, TokenKind::Word);  // e
-    assert_eq!(t[9].kind, TokenKind::Amp);   // &
+    assert_eq!(t[2].kind, TokenKind::Word); // b
+    assert_eq!(t[3].kind, TokenKind::OrOr); // ||
+    assert_eq!(t[4].kind, TokenKind::Word); // c
+    assert_eq!(t[5].kind, TokenKind::Pipe); // |
+    assert_eq!(t[6].kind, TokenKind::Word); // d
+    assert_eq!(t[7].kind, TokenKind::Semi); // ;
+    assert_eq!(t[8].kind, TokenKind::Word); // e
+    assert_eq!(t[9].kind, TokenKind::Amp); // &
     assert_eq!(t[10].kind, TokenKind::Word); // f
 }
 
@@ -93,13 +93,16 @@ fn redirections() {
 fn quotes() {
     let t = tokenize("echo 'single' \"double\"");
     assert_eq!(t[0].text, "echo");
-    assert_eq!(t[1].text, "'single'");  // quotes preserved in raw text
+    assert_eq!(t[1].text, "'single'"); // quotes preserved in raw text
     assert_eq!(t[2].text, "\"double\"");
 }
 
 #[test]
 fn command_position_operators() {
-    let ctx = LexContext { cmd_pos: true, ..Default::default() };
+    let ctx = LexContext {
+        cmd_pos: true,
+        ..Default::default()
+    };
 
     // ( subshell
     let t = tokenize_with_ctx("( echo hi )", ctx);
@@ -143,7 +146,10 @@ fn expansions() {
 
 #[test]
 fn double_bracket() {
-    let ctx = LexContext { cmd_pos: true, ..Default::default() };
+    let ctx = LexContext {
+        cmd_pos: true,
+        ..Default::default()
+    };
     let t = tokenize_with_ctx("[[ -n \"$var\" ]]", ctx);
     assert_eq!(t[0].kind, TokenKind::DoubleBracketOpen);
     assert_eq!(t[1].kind, TokenKind::Word);
@@ -155,14 +161,21 @@ fn double_bracket() {
 
 #[test]
 fn double_bracket_close() {
-    let ctx = LexContext { in_cond: true, ..Default::default() };
+    let ctx = LexContext {
+        in_cond: true,
+        ..Default::default()
+    };
     let t = tokenize_with_ctx("]]", ctx);
     assert_eq!(t[0].kind, TokenKind::DoubleBracketClose);
 }
 
 #[test]
 fn arith_command() {
-    let ctx = LexContext { cmd_pos: true, in_arith: true, ..Default::default() };
+    let ctx = LexContext {
+        cmd_pos: true,
+        in_arith: true,
+        ..Default::default()
+    };
     let t = tokenize_with_ctx("i = i + 1", ctx);
     assert_eq!(t[0].kind, TokenKind::Word);
     assert_eq!(t[0].text, "i");
@@ -190,7 +203,10 @@ fn unterminated_quote_errors() {
 
 #[test]
 fn assignment_detection() {
-    let ctx = LexContext { cmd_pos: true, ..Default::default() };
+    let ctx = LexContext {
+        cmd_pos: true,
+        ..Default::default()
+    };
     let t = tokenize_with_ctx("FOO=bar cmd", ctx);
     assert_eq!(t[0].kind, TokenKind::Assignment);
     assert_eq!(t[0].text, "FOO=bar");

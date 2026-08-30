@@ -6,24 +6,26 @@
 use alloc::borrow::ToOwned;
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::string::String;
+use alloc::vec;
 use alloc::vec::Vec;
 
 use cake_blacklist::CommandBlacklist;
-use cake_env::{EnvVar, EnvStack};
+use cake_env::{EnvStack, EnvVar};
 use cake_platform::{ChildFd, Fd, ProcessHandle, SpawnConfig, WaitOptions, WaitStatus};
 use cake_proc::ProcStatus;
 use cake_syntax::{
-    parse, AndOrList, AndOrOp, AssignmentValue, CaseCommand, Command, CommandKind, CompleteCommand,
-    ForCommand, List, Pipeline, Program, Separator, SimpleCommand, WhileCommand, WordPart,
+    AndOrList, AndOrOp, AssignmentValue, CStyleForCommand, CaseCommand, Command, CommandKind,
+    CompleteCommand, CoprocCommand, ForCommand, List, Pipeline, Program, SelectCommand, Separator,
+    SimpleCommand, WhileCommand, WordPart, parse,
 };
 
 use crate::arith::eval_arith;
 use crate::builtins;
 use crate::cond::eval_cond;
-use crate::expand::{expand_word, expand_word_quoted, ExpandCtx};
+use crate::expand::{ExpandCtx, expand_word, expand_word_quoted};
 use crate::glob::glob_match_ext;
-use crate::redirect::{setup_redirects, CommandFds};
-use crate::resolve::{resolve_command, CommandSpec};
+use crate::redirect::{CommandFds, setup_redirects};
+use crate::resolve::{CommandSpec, resolve_command};
 
 /// The outcome of evaluating a command string.
 #[derive(Debug)]
@@ -257,7 +259,9 @@ impl Executor {
             random_state: cake_platform::try_get()
                 .map(|p| p.time_seconds() as u32 ^ 0x9e3779b9)
                 .unwrap_or(0x9e3779b9),
-            start_time: cake_platform::try_get().map(|p| p.time_seconds()).unwrap_or(0),
+            start_time: cake_platform::try_get()
+                .map(|p| p.time_seconds())
+                .unwrap_or(0),
             cmd_lineno: 1,
             proc_subst: Vec::new(),
             in_subshell: false,
@@ -336,8 +340,15 @@ impl Executor {
                 self.last_status = status;
                 // A pending `set -e` exit is reported through the status; it
                 // is cleared here so a fresh input starts clean (interactive).
-                let final_status = self.errexit_pending.take().map(ProcStatus::Exit).unwrap_or(status);
-                let final_status = self.exit_requested().map(ProcStatus::Exit).unwrap_or(final_status);
+                let final_status = self
+                    .errexit_pending
+                    .take()
+                    .map(ProcStatus::Exit)
+                    .unwrap_or(status);
+                let final_status = self
+                    .exit_requested()
+                    .map(ProcStatus::Exit)
+                    .unwrap_or(final_status);
                 EvalOutcome {
                     status: final_status,
                     error: None,
@@ -631,7 +642,9 @@ impl Executor {
                     });
                     match &r.target {
                         RedirectTarget::Word(w) => redir.push_str(&word_text(w)),
-                        RedirectTarget::Fd(n) => redir.push_str(&alloc::string::ToString::to_string(n)),
+                        RedirectTarget::Fd(n) => {
+                            redir.push_str(&alloc::string::ToString::to_string(n))
+                        }
                         RedirectTarget::Close => redir.push('-'),
                         RedirectTarget::HereString(w) => redir.push_str(&word_text(w)),
                         RedirectTarget::Heredoc { .. } => {}
@@ -739,7 +752,9 @@ impl Executor {
             let _ = self.wait_for(h);
         }
 
-        if self.pipefail && let Some(code) = pipe_status {
+        if self.pipefail
+            && let Some(code) = pipe_status
+        {
             last_status = ProcStatus::Exit(code);
         }
 
@@ -776,8 +791,20 @@ impl Executor {
                 let st = self.apply_fds_in_parent(fds, |exec| exec.eval_for(fc));
                 Ok(EvalResult::Done(st))
             }
+            CommandKind::CStyleFor(csf) => {
+                let st = self.apply_fds_in_parent(fds, |exec| exec.eval_c_style_for(csf));
+                Ok(EvalResult::Done(st))
+            }
             CommandKind::Case(cs) => {
                 let st = self.apply_fds_in_parent(fds, |exec| exec.eval_case(cs));
+                Ok(EvalResult::Done(st))
+            }
+            CommandKind::Select(sc) => {
+                let st = self.apply_fds_in_parent(fds, |exec| exec.eval_select(sc));
+                Ok(EvalResult::Done(st))
+            }
+            CommandKind::Coproc(cc) => {
+                let st = self.apply_fds_in_parent(fds, |exec| exec.eval_coproc(cc));
                 Ok(EvalResult::Done(st))
             }
             CommandKind::Block(blk) => {
@@ -822,7 +849,8 @@ impl Executor {
                 if self.functrace {
                     self.run_trap(TrapTrigger::Debug);
                 }
-                self.functions.insert(fn_cmd.name.clone(), (*fn_cmd.body).clone());
+                self.functions
+                    .insert(fn_cmd.name.clone(), (*fn_cmd.body).clone());
                 Ok(EvalResult::Done(ProcStatus::Exit(0)))
             }
             CommandKind::Arith(ar) => {
@@ -836,7 +864,11 @@ impl Executor {
         }
     }
 
-    fn eval_simple(&mut self, sc: &SimpleCommand, fds: &mut CommandFds) -> Result<EvalResult, String> {
+    fn eval_simple(
+        &mut self,
+        sc: &SimpleCommand,
+        fds: &mut CommandFds,
+    ) -> Result<EvalResult, String> {
         // `trap ... DEBUG` fires before every simple command (not inside
         // functions unless `set -T`).
         if (self.fn_depth == 0 || self.functrace) && !self.in_subshell {
@@ -874,8 +906,7 @@ impl Executor {
                     let idx_str = crate::arith::eval_arith_value(ctx.env, &expanded_idx)?;
                     let idx: usize = idx_str.parse().unwrap_or(0);
                     let v = expand_word_quoted(&mut ctx, value)?;
-                    set_indexed(self, &a.name, idx, v)
-                        .map_err(|e| alloc::format!("cake: {e}"))?;
+                    set_indexed(self, &a.name, idx, v).map_err(|e| alloc::format!("cake: {e}"))?;
                 }
             }
         }
@@ -1058,13 +1089,19 @@ impl Executor {
             if let Some(lc) = self.loop_control.take() {
                 if lc.is_break {
                     if lc.depth > 1 {
-                        self.loop_control = Some(LoopControl { is_break: true, depth: lc.depth - 1 });
+                        self.loop_control = Some(LoopControl {
+                            is_break: true,
+                            depth: lc.depth - 1,
+                        });
                     }
                     break;
                 }
                 // continue: skip to the next condition check
                 if lc.depth > 1 {
-                    self.loop_control = Some(LoopControl { is_break: false, depth: lc.depth - 1 });
+                    self.loop_control = Some(LoopControl {
+                        is_break: false,
+                        depth: lc.depth - 1,
+                    });
                 }
             }
         }
@@ -1095,9 +1132,7 @@ impl Executor {
         };
         self.loop_depth += 1;
         for w in words {
-            let _ = self
-                .env
-                .set(&fc.var, EnvVar::new(w));
+            let _ = self.env.set(&fc.var, EnvVar::new(w));
             self.eval_list(&fc.body);
             if self.exit_requested.is_some() {
                 break;
@@ -1105,18 +1140,92 @@ impl Executor {
             if let Some(lc) = self.loop_control.take() {
                 if lc.is_break {
                     if lc.depth > 1 {
-                        self.loop_control = Some(LoopControl { is_break: true, depth: lc.depth - 1 });
+                        self.loop_control = Some(LoopControl {
+                            is_break: true,
+                            depth: lc.depth - 1,
+                        });
                     }
                     break;
                 }
                 // continue: move to the next word
                 if lc.depth > 1 {
-                    self.loop_control = Some(LoopControl { is_break: false, depth: lc.depth - 1 });
+                    self.loop_control = Some(LoopControl {
+                        is_break: false,
+                        depth: lc.depth - 1,
+                    });
                 }
             }
         }
         self.loop_depth -= 1;
         ProcStatus::Exit(0)
+    }
+
+    fn eval_c_style_for(&mut self, csf: &CStyleForCommand) -> ProcStatus {
+        self.loop_depth += 1;
+
+        // 1. Evaluate the initializer (once)
+        if !csf.init.is_empty() {
+            let init_result = eval_arith(self, &csf.init);
+            if self.exit_requested.is_some() {
+                self.loop_depth -= 1;
+                return init_result;
+            }
+        }
+
+        let mut result = ProcStatus::Exit(0);
+
+        loop {
+            // 2. Evaluate the condition (if non-empty). Empty cond = always true
+            if !csf.cond.is_empty() {
+                self.errexit_suppress += 1;
+                let cond_result = eval_arith(self, &csf.cond);
+                self.errexit_suppress -= 1;
+
+                if self.exit_requested.is_some() {
+                    result = cond_result;
+                    break;
+                }
+
+                // In bash, `(( 0 ))` has exit status 1 (false), `(( nonzero ))` is 0 (true)
+                if !cond_result.success() {
+                    break;
+                }
+            }
+            // If cond is empty, we always enter the body (infinite loop unless break)
+
+            // 3. Execute the body
+            self.eval_list(&csf.body);
+
+            // 4. Handle break/continue
+            if let Some(lc) = self.loop_control.take() {
+                if lc.is_break {
+                    if lc.depth > 1 {
+                        self.loop_control = Some(LoopControl {
+                            is_break: true,
+                            depth: lc.depth - 1,
+                        });
+                    }
+                    break;
+                }
+                // continue: skip to the increment, then re-check condition
+                if lc.depth > 1 {
+                    self.loop_control = Some(LoopControl {
+                        is_break: false,
+                        depth: lc.depth - 1,
+                    });
+                }
+                // Fall through to the increment (do NOT skip it on continue)
+            }
+
+            // 5. Evaluate the increment (if non-empty)
+            if !csf.incr.is_empty() {
+                let _ = eval_arith(self, &csf.incr);
+                // eval_arith already applies side effects to self.env
+            }
+        }
+
+        self.loop_depth -= 1;
+        result
     }
 
     fn eval_case(&mut self, cs: &CaseCommand) -> ProcStatus {
@@ -1140,6 +1249,205 @@ impl Executor {
         ProcStatus::Exit(0)
     }
 
+    fn eval_select(&mut self, sc: &SelectCommand) -> ProcStatus {
+        let words: Vec<String> = match &sc.in_words {
+            Some(in_words) => {
+                let mut out = Vec::new();
+                let mut ctx = self.ctx();
+                for w in in_words {
+                    if let Ok(fields) = expand_word(&mut ctx, w) {
+                        out.extend(fields);
+                    }
+                }
+                out
+            }
+            None => {
+                // `select var; do` == `select var in "$@"`
+                if self.positional.len() > 1 {
+                    self.positional[1..].to_vec()
+                } else {
+                    Vec::new()
+                }
+            }
+        };
+
+        self.loop_depth += 1;
+        loop {
+            // Print the numbered menu
+            for (i, item) in words.iter().enumerate() {
+                let _ = cake_platform::get()
+                    .write(1, alloc::format!("{}) {}\n", i + 1, item).as_bytes());
+            }
+
+            // Print the prompt: $PS3 or "#? "
+            let prompt = self
+                .env
+                .get("PS3")
+                .map(|v| v.value().to_owned())
+                .unwrap_or_else(|| "#? ".to_owned());
+            let _ = cake_platform::get().write(1, prompt.as_bytes());
+
+            // Read a line from stdin
+            let line = match builtins::read_line(false) {
+                Ok(l) => l,
+                Err(_) => break, // EOF → exit loop
+            };
+
+            // Empty input → name is empty, skip body
+            if line.trim().is_empty() {
+                let _ = self.env.set(&sc.var, EnvVar::new(String::new()));
+                continue;
+            }
+
+            // Parse the number
+            let choice: usize = match line.trim().parse() {
+                Ok(n) if n >= 1 && n <= words.len() => n,
+                _ => {
+                    let _ = self.env.set(&sc.var, EnvVar::new(String::new()));
+                    // Bash: invalid input prints an error and skips body
+                    continue;
+                }
+            };
+
+            let _ = self
+                .env
+                .set(&sc.var, EnvVar::new(words[choice - 1].clone()));
+            self.eval_list(&sc.body);
+
+            if self.exit_requested.is_some() {
+                break;
+            }
+
+            if let Some(lc) = self.loop_control.take() {
+                if lc.is_break {
+                    if lc.depth > 1 {
+                        self.loop_control = Some(LoopControl {
+                            is_break: true,
+                            depth: lc.depth - 1,
+                        });
+                    }
+                    break;
+                }
+                if lc.depth > 1 {
+                    self.loop_control = Some(LoopControl {
+                        is_break: false,
+                        depth: lc.depth - 1,
+                    });
+                }
+            }
+        }
+
+        self.loop_depth -= 1;
+        ProcStatus::Exit(0)
+    }
+
+    fn eval_coproc(&mut self, cc: &CoprocCommand) -> ProcStatus {
+        // 1. Create two pipes
+        let p = cake_platform::get();
+        let (c2p_read, c2p_write) = match p.pipe(false) {
+            Ok(p) => p,
+            Err(e) => {
+                self.report_error(&alloc::format!("cake: coproc: pipe: {e}"));
+                return ProcStatus::Exit(1);
+            }
+        };
+        let (p2c_read, p2c_write) = match p.pipe(false) {
+            Ok(p) => p,
+            Err(e) => {
+                let _ = p.close(c2p_read);
+                let _ = p.close(c2p_write);
+                self.report_error(&alloc::format!("cake: coproc: pipe: {e}"));
+                return ProcStatus::Exit(1);
+            }
+        };
+
+        // 2. Determine the variable name
+        let var_name = cc.name.clone().unwrap_or_else(|| "COPROC".to_owned());
+
+        // 3. Set up CommandFds for the child:
+        //    child stdin  = p2c_read  (reads what parent writes)
+        //    child stdout = c2p_write (writes what parent reads)
+        let mut child_fds = crate::redirect::CommandFds {
+            stdin: ChildFd::Fd(p2c_read),
+            stdout: ChildFd::Fd(c2p_write),
+            owned: vec![p2c_read, c2p_write],
+            ..Default::default()
+        };
+
+        // 4. Fork the child
+        let body = (*cc.body).clone();
+        let exec = &mut *self as *mut Executor;
+        let handle = p.run_in_child(&mut move || {
+            let exec = unsafe { &mut *exec };
+            let inherited: Vec<String> = exec
+                .traps
+                .iter()
+                .filter(|(t, _)| *t == TrapTrigger::Exit)
+                .map(|(_, c)| c.clone())
+                .collect();
+            exec.in_subshell = true;
+            let mut fds = child_fds.clone();
+            let st = match exec.eval_command(&body, &mut fds) {
+                Ok(result) => match result {
+                    EvalResult::Done(s) => s.status_code(),
+                    EvalResult::Spawned(h) => {
+                        // Wait for the spawned process
+                        match cake_platform::get().wait(&h, WaitOptions::NONE) {
+                            Ok(WaitStatus::Exited(code)) => code as i32,
+                            _ => 127,
+                        }
+                    }
+                },
+                Err(_) => 1,
+            };
+            exec.run_exit_traps_except(&inherited);
+            st
+        });
+
+        match handle {
+            Ok(h) => {
+                // 5. Close the child-side fds in the parent
+                let _ = p.close(c2p_read);
+                let _ = p.close(p2c_write);
+
+                // 6. Set the variable: an array with [0]=write_fd, [1]=read_fd
+                //    $COPROC[0] = p2c_write (write to coprocess stdin)
+                //    $COPROC[1] = c2p_read (read from coprocess stdout)
+                let _ = self.env.set(
+                    &var_name,
+                    EnvVar::new_list(vec![
+                        alloc::format!("{}", p2c_write), // [0] = write to coprocess
+                        alloc::format!("{}", c2p_read),  // [1] = read from coprocess
+                    ]),
+                );
+
+                // 7. Set $! to the coprocess pid
+                self.last_bg_pid = h.pid();
+
+                // Track the background job for `jobs`/`wait`
+                let cmd_text =
+                    alloc::format!("coproc {} {}", var_name, self.command_to_text(&cc.body));
+                self.background.push(JobEntry {
+                    job_id: self.next_job_id,
+                    handle: h,
+                    cmd: cmd_text,
+                    status: None,
+                });
+                self.next_job_id += 1;
+
+                ProcStatus::Exit(0)
+            }
+            Err(e) => {
+                let _ = p.close(c2p_read);
+                let _ = p.close(c2p_write);
+                let _ = p.close(p2c_read);
+                let _ = p.close(p2c_write);
+                self.report_error(&alloc::format!("cake: coproc: {e}"));
+                ProcStatus::Exit(1)
+            }
+        }
+    }
+
     // --- helpers ---------------------------------------------------------
 
     fn ctx(&mut self) -> ExpandCtx<'_> {
@@ -1158,7 +1466,9 @@ impl Executor {
             random_state: &mut self.random_state,
             start_time: self.start_time,
             lineno: self.cmd_lineno,
-            parent_pid: cake_platform::try_get().map(|p| p.parent_pid()).unwrap_or(0),
+            parent_pid: cake_platform::try_get()
+                .map(|p| p.parent_pid())
+                .unwrap_or(0),
             proc_subst_fds: &mut self.proc_subst,
         }
     }
@@ -1233,8 +1543,10 @@ impl Executor {
                         match cake_syntax::split_command_line(&val) {
                             Ok(sub) => {
                                 for s in sub {
-                                    let w =
-                                        cake_syntax::word::parse_word(&s, cake_syntax::Span::new(0, 0));
+                                    let w = cake_syntax::word::parse_word(
+                                        &s,
+                                        cake_syntax::Span::new(0, 0),
+                                    );
                                     let mut ctx = self.ctx();
                                     match expand_word(&mut ctx, &w) {
                                         Ok(fields) => out.extend(fields),

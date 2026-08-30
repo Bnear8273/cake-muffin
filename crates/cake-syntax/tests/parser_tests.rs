@@ -1,8 +1,8 @@
 //! Parser tests: bash grammar coverage, incomplete detection, error spans.
 
+use cake_syntax::ParseError;
 use cake_syntax::ast::*;
 use cake_syntax::parse;
-use cake_syntax::ParseError;
 
 /// Parse and require success, returning the program.
 fn parse_ok(src: &str) -> Program {
@@ -361,7 +361,9 @@ fn word_parts() {
     };
     let w = &s.words[1];
     assert!(
-        w.parts.iter().any(|part| matches!(part, WordPart::Parameter(p, _) if p.name == "HOME"))
+        w.parts
+            .iter()
+            .any(|part| matches!(part, WordPart::Parameter(p, _) if p.name == "HOME"))
     );
 }
 
@@ -421,7 +423,6 @@ fn subshell_with_parens_in_string() {
         panic!("expected subshell as second pipeline element");
     };
 }
-
 
 #[test]
 fn word_dquote_preserves_backslash() {

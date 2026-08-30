@@ -17,7 +17,10 @@ impl Span {
 
     /// An empty span at `pos`.
     pub fn at(pos: Offset) -> Self {
-        Self { start: pos, end: pos }
+        Self {
+            start: pos,
+            end: pos,
+        }
     }
 
     /// An empty span of unknown location.

@@ -80,9 +80,15 @@ pub enum CommandKind {
     Simple(SimpleCommand),
     If(IfCommand),
     For(ForCommand),
+    /// C-style `for (( expr1; expr2; expr3 )); do body; done`
+    CStyleFor(CStyleForCommand),
     While(WhileCommand),
     Until(WhileCommand),
     Case(CaseCommand),
+    /// `select name [in words]; do body; done`
+    Select(SelectCommand),
+    /// `coproc [name] command`
+    Coproc(CoprocCommand),
     Function(FunctionCommand),
     /// `{ ...; }`
     Block(BlockCommand),
@@ -141,6 +147,40 @@ pub struct ForCommand {
     /// `None` means `for var; do` == `for var in "$@"`.
     pub in_words: Option<Vec<Word>>,
     pub body: List,
+    pub span: Span,
+}
+
+/// C-style `for (( expr1; expr2; expr3 )); do body; done`.
+#[derive(Debug, Clone)]
+pub struct CStyleForCommand {
+    /// The initializer expression (raw text, e.g. `"i=0"`). Empty string if omitted.
+    pub init: String,
+    /// The condition expression (raw text, e.g. `"i < 10"`). Empty string if omitted
+    /// (treated as always-true, matching bash).
+    pub cond: String,
+    /// The increment expression (raw text, e.g. `"i++"`). Empty string if omitted.
+    pub incr: String,
+    pub body: List,
+    pub span: Span,
+}
+
+/// `select name [in words]; do body; done` — interactive menu selection.
+#[derive(Debug, Clone)]
+pub struct SelectCommand {
+    pub var: String,
+    /// `None` means `select var; do` == `select var in "$@"`.
+    pub in_words: Option<Vec<Word>>,
+    pub body: List,
+    pub span: Span,
+}
+
+/// `coproc [name] command` — start a coprocess.
+#[derive(Debug, Clone)]
+pub struct CoprocCommand {
+    /// Optional name; `None` means the default variable name "COPROC".
+    pub name: Option<String>,
+    /// The command to run (a simple or compound command).
+    pub body: Box<Command>,
     pub span: Span,
 }
 

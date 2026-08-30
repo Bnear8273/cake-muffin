@@ -67,8 +67,7 @@ fn import_env() -> EnvStack {
                     .collect();
                 (
                     name,
-                    EnvVar::from_path(list)
-                        .set_flags(EnvVarFlags::EXPORT | EnvVarFlags::PATHVAR),
+                    EnvVar::from_path(list).set_flags(EnvVarFlags::EXPORT | EnvVarFlags::PATHVAR),
                 )
             } else {
                 (name, EnvVar::new(value).set_flags(EnvVarFlags::EXPORT))
@@ -125,9 +124,13 @@ fn print_help() {
     }
     println!();
     println!("Features:");
-    println!("  control flow     if/elif/else, for, while, until, case, {{ }} blocks, ( ) subshells, functions");
+    println!(
+        "  control flow     if/elif/else, for, while, until, case, {{ }} blocks, ( ) subshells, functions"
+    );
     println!("  pipes            |, &&, ||, !, & (background)");
     println!("  redirections     >, >>, <, 2>, 2>&1, &>, &>>, heredocs, herestrings");
-    println!("  expansion        $var, ${{var}}, $?, $#, $@, $*, $$, $((arith)), ~, quotes, IFS splitting");
+    println!(
+        "  expansion        $var, ${{var}}, $?, $#, $@, $*, $$, $((arith)), ~, quotes, IFS splitting"
+    );
     println!("  conditionals     [ ... ] and [[ ... ]] tests, arithmetic (( ... ))");
 }

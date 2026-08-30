@@ -93,7 +93,12 @@ impl EnvStack {
     pub fn get_names(&self) -> Vec<&str> {
         let mut names: Vec<&str> = Vec::new();
         let mut seen: BTreeSet<&str> = BTreeSet::new();
-        for scope in self.locals.iter().rev().chain(core::iter::once(&self.globals)) {
+        for scope in self
+            .locals
+            .iter()
+            .rev()
+            .chain(core::iter::once(&self.globals))
+        {
             for name in scope.vars.keys() {
                 if seen.insert(name.as_str()) {
                     names.push(name);
@@ -107,7 +112,12 @@ impl EnvStack {
     pub fn get_names_exported(&self) -> Vec<(&str, &EnvVar)> {
         let mut out: Vec<(&str, &EnvVar)> = Vec::new();
         let mut seen: BTreeSet<&str> = BTreeSet::new();
-        for scope in self.locals.iter().rev().chain(core::iter::once(&self.globals)) {
+        for scope in self
+            .locals
+            .iter()
+            .rev()
+            .chain(core::iter::once(&self.globals))
+        {
             for (name, var) in &scope.vars {
                 if var.is_exported() && seen.insert(name.as_str()) {
                     out.push((name.as_str(), var));
@@ -165,7 +175,12 @@ impl EnvStack {
     /// with the innermost visible binding winning.
     pub fn exported_env(&self) -> Vec<(String, String)> {
         let mut map: BTreeMap<String, String> = BTreeMap::new();
-        for scope in self.locals.iter().rev().chain(core::iter::once(&self.globals)) {
+        for scope in self
+            .locals
+            .iter()
+            .rev()
+            .chain(core::iter::once(&self.globals))
+        {
             for (name, var) in &scope.vars {
                 if var.is_exported() {
                     map.insert(name.clone(), var.as_env_string());

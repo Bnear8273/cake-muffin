@@ -12,7 +12,11 @@ use crate::executor::{Executor, TrapTrigger};
 
 /// Run `name` with `args` (args[0] == name). Returns `None` if `name` is not
 /// a builtin.
-pub fn run_builtin(exec: &mut Executor, name: &str, args: &[String]) -> Option<Result<ProcStatus, String>> {
+pub fn run_builtin(
+    exec: &mut Executor,
+    name: &str,
+    args: &[String],
+) -> Option<Result<ProcStatus, String>> {
     Some(match name {
         "echo" => echo(args),
         "printf" => printf(args),
@@ -235,7 +239,13 @@ fn printf(args: &[String]) -> Result<ProcStatus, String> {
             }
             'c' => {
                 let arg = args.get(2).map(String::as_str).unwrap_or("");
-                buf.push_str(arg.chars().next().map(|c| c.to_string()).unwrap_or_default().as_str());
+                buf.push_str(
+                    arg.chars()
+                        .next()
+                        .map(|c| c.to_string())
+                        .unwrap_or_default()
+                        .as_str(),
+                );
             }
             '%' => buf.push('%'),
             'b' => {
@@ -274,7 +284,9 @@ fn printf_escape(chars: &mut core::str::Chars<'_>) -> String {
                 }
             }
             let val = u32::from_str_radix(&oct, 8).unwrap_or(0);
-            char::from_u32(val).map(|c| c.to_string()).unwrap_or_default()
+            char::from_u32(val)
+                .map(|c| c.to_string())
+                .unwrap_or_default()
         }
         Some('x') => {
             let mut hex = String::new();
@@ -286,7 +298,9 @@ fn printf_escape(chars: &mut core::str::Chars<'_>) -> String {
                 }
             }
             let val = u32::from_str_radix(&hex, 16).unwrap_or(0);
-            char::from_u32(val).map(|c| c.to_string()).unwrap_or_default()
+            char::from_u32(val)
+                .map(|c| c.to_string())
+                .unwrap_or_default()
         }
         Some(other) => other.to_string(),
     }
@@ -331,7 +345,10 @@ fn cd(exec: &mut Executor, args: &[String]) -> Result<ProcStatus, String> {
         .set("OLDPWD", EnvVar::new(old).set_flags(EnvVarFlags::EXPORT))
         .ok();
     exec.env
-        .set("PWD", EnvVar::new(cake_platform::get().current_dir()).set_flags(EnvVarFlags::EXPORT))
+        .set(
+            "PWD",
+            EnvVar::new(cake_platform::get().current_dir()).set_flags(EnvVarFlags::EXPORT),
+        )
         .ok();
     Ok(ProcStatus::Exit(0))
 }
@@ -537,14 +554,46 @@ impl TestParser<'_> {
 fn is_unary_op(op: &str) -> bool {
     matches!(
         op,
-        "-n" | "-z" | "-e" | "-f" | "-d" | "-r" | "-w" | "-x" | "-s" | "-L"
+        "-n" | "-z"
+            | "-e"
+            | "-f"
+            | "-d"
+            | "-r"
+            | "-w"
+            | "-x"
+            | "-s"
+            | "-L"
+            | "-h"
+            | "-S"
+            | "-b"
+            | "-c"
+            | "-p"
+            | "-u"
+            | "-g"
+            | "-k"
+            | "-O"
+            | "-G"
+            | "-N"
+            | "-t"
     )
 }
 
 fn is_binary_op(op: &str) -> bool {
     matches!(
         op,
-        "=" | "==" | "!=" | "-eq" | "-ne" | "-lt" | "-le" | "-gt" | "-ge" | "<" | ">"
+        "=" | "=="
+            | "!="
+            | "-eq"
+            | "-ne"
+            | "-lt"
+            | "-le"
+            | "-gt"
+            | "-ge"
+            | "<"
+            | ">"
+            | "-nt"
+            | "-ot"
+            | "-ef"
     )
 }
 
@@ -552,6 +601,20 @@ fn unary_test(op: &str, arg: &str) -> Result<bool, String> {
     Ok(match op {
         "-n" => !arg.is_empty(),
         "-z" => arg.is_empty(),
+        "-t" => {
+            let fd: u32 = arg.trim().parse().unwrap_or(0);
+            cake_platform::get().is_terminal_fd(fd)
+        }
+        "-O" => {
+            let info = cake_platform::get().stat(arg);
+            let my_uid = cake_platform::get().geteuid();
+            info.uid == my_uid
+        }
+        "-G" => {
+            let info = cake_platform::get().stat(arg);
+            let my_gid = cake_platform::get().getegid();
+            info.gid == my_gid
+        }
         _ => {
             let p = cake_platform::get();
             match op {
@@ -563,6 +626,18 @@ fn unary_test(op: &str, arg: &str) -> Result<bool, String> {
                 "-x" => p.stat(arg).is_executable,
                 "-s" => p.stat(arg).size > 0,
                 "-L" => p.stat(arg).is_symlink,
+                "-h" => p.stat(arg).is_symlink,
+                "-S" => p.stat(arg).is_socket,
+                "-b" => p.stat(arg).is_block_device,
+                "-c" => p.stat(arg).is_char_device,
+                "-p" => p.stat(arg).is_fifo,
+                "-u" => p.stat(arg).has_suid,
+                "-g" => p.stat(arg).has_sgid,
+                "-k" => p.stat(arg).has_sticky,
+                "-N" => {
+                    let info = p.stat(arg);
+                    info.mtime > info.atime
+                }
                 _ => false,
             }
         }
@@ -581,6 +656,21 @@ fn binary_test(lhs: &str, op: &str, rhs: &str) -> Result<bool, String> {
         "-ge" => parse_num(lhs) >= parse_num(rhs),
         "<" => lhs < rhs,
         ">" => lhs > rhs,
+        "-nt" => {
+            let info_lhs = cake_platform::get().stat(lhs);
+            let info_rhs = cake_platform::get().stat(rhs);
+            info_lhs.mtime > info_rhs.mtime
+        }
+        "-ot" => {
+            let info_lhs = cake_platform::get().stat(lhs);
+            let info_rhs = cake_platform::get().stat(rhs);
+            info_lhs.mtime < info_rhs.mtime
+        }
+        "-ef" => {
+            let info_lhs = cake_platform::get().stat(lhs);
+            let info_rhs = cake_platform::get().stat(rhs);
+            info_lhs.dev == info_rhs.dev && info_lhs.ino == info_rhs.ino
+        }
         _ => false,
     })
 }
@@ -597,19 +687,23 @@ fn r#break(exec: &mut Executor, args: &[String]) -> Result<ProcStatus, String> {
         return Err("cake: break: only meaningful in a `for`, `while`, or `until` loop".into());
     }
     let depth = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(1).max(1);
-    exec.loop_control = Some(crate::executor::LoopControl { is_break: true, depth });
+    exec.loop_control = Some(crate::executor::LoopControl {
+        is_break: true,
+        depth,
+    });
     Ok(ProcStatus::Exit(0))
 }
 
 /// `continue [n]` — skip to the next iteration of the enclosing loop.
 fn continue_(exec: &mut Executor, args: &[String]) -> Result<ProcStatus, String> {
     if exec.loop_depth == 0 {
-        return Err(
-            "cake: continue: only meaningful in a `for`, `while`, or `until` loop".into(),
-        );
+        return Err("cake: continue: only meaningful in a `for`, `while`, or `until` loop".into());
     }
     let depth = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(1).max(1);
-    exec.loop_control = Some(crate::executor::LoopControl { is_break: false, depth });
+    exec.loop_control = Some(crate::executor::LoopControl {
+        is_break: false,
+        depth,
+    });
     Ok(ProcStatus::Exit(0))
 }
 
@@ -621,7 +715,11 @@ fn r#return(exec: &mut Executor, args: &[String]) -> Result<ProcStatus, String> 
     let code = match args.get(1) {
         Some(s) => match s.parse::<i32>() {
             Ok(n) => n,
-            Err(_) => return Err(alloc::format!("cake: return: `{s}': numeric argument required")),
+            Err(_) => {
+                return Err(alloc::format!(
+                    "cake: return: `{s}': numeric argument required"
+                ));
+            }
         },
         None => exec.last_status.status_code(),
     };
@@ -636,12 +734,14 @@ fn source(exec: &mut Executor, args: &[String]) -> Result<ProcStatus, String> {
     let Some(path) = args.get(1) else {
         return Err("cake: source: filename argument required".into());
     };
-    let content = read_file(path)
-        .map_err(|e| alloc::format!("cake: source: {path}: {e}"))?;
+    let content = read_file(path).map_err(|e| alloc::format!("cake: source: {path}: {e}"))?;
     // The sourced file sees args as positional (`$1`, ...); `return` works.
     let saved_positional = core::mem::replace(
         &mut exec.positional,
-        alloc::vec![path.clone()].into_iter().chain(args[2..].iter().cloned()).collect(),
+        alloc::vec![path.clone()]
+            .into_iter()
+            .chain(args[2..].iter().cloned())
+            .collect(),
     );
     exec.fn_depth += 1;
     let outcome = exec.eval_str(&content);
@@ -711,7 +811,7 @@ fn read(exec: &mut Executor, args: &[String]) -> Result<ProcStatus, String> {
 }
 
 /// Read one line (up to `\n`, excluded) from fd 0.
-fn read_line(raw: bool) -> Result<String, String> {
+pub(crate) fn read_line(raw: bool) -> Result<String, String> {
     let p = cake_platform::get();
     let mut out = String::new();
     let mut buf = [0u8; 1];
@@ -774,7 +874,9 @@ fn export(exec: &mut Executor, args: &[String]) -> Result<ProcStatus, String> {
                 let name = &arg[..eq];
                 let val = &arg[eq + 1..];
                 if !is_identifier(name) {
-                    return Err(alloc::format!("cake: export: `{arg}': not a valid identifier"));
+                    return Err(alloc::format!(
+                        "cake: export: `{arg}': not a valid identifier"
+                    ));
                 }
                 exec.env
                     .set(name, EnvVar::new(val).set_flags(EnvVarFlags::EXPORT))
@@ -792,7 +894,9 @@ fn export(exec: &mut Executor, args: &[String]) -> Result<ProcStatus, String> {
                     }
                     None => {
                         if !is_identifier(arg) {
-                            return Err(alloc::format!("cake: export: `{arg}': not a valid identifier"));
+                            return Err(alloc::format!(
+                                "cake: export: `{arg}': not a valid identifier"
+                            ));
                         }
                         exec.env
                             .set(arg, EnvVar::new("").set_flags(EnvVarFlags::EXPORT))
@@ -904,9 +1008,11 @@ fn local(exec: &mut Executor, args: &[String]) -> Result<ProcStatus, String> {
         let mut buf = String::new();
         for name in exec.env.get_names() {
             if let Some(var) = exec.env.get(name) {
-                buf.push_str(&alloc::format!("declare -{flags_str} {name}=\"{value}\"\n",
+                buf.push_str(&alloc::format!(
+                    "declare -{flags_str} {name}=\"{value}\"\n",
                     flags_str = flag_str(var.flags()),
-                    value = var.value()));
+                    value = var.value()
+                ));
             }
         }
         out(&buf);
@@ -964,9 +1070,11 @@ fn declare(exec: &mut Executor, args: &[String]) -> Result<ProcStatus, String> {
                 if flags.contains(EnvVarFlags::EXPORT) && !var.is_exported() {
                     continue;
                 }
-                buf.push_str(&alloc::format!("declare -{flags_str} {name}=\"{value}\"\n",
+                buf.push_str(&alloc::format!(
+                    "declare -{flags_str} {name}=\"{value}\"\n",
                     flags_str = flag_str(var.flags()),
-                    value = var.value()));
+                    value = var.value()
+                ));
             }
         }
         out(&buf);
@@ -996,9 +1104,7 @@ fn declare(exec: &mut Executor, args: &[String]) -> Result<ProcStatus, String> {
                     flags_str = flag_str(var.flags()),
                     value = var.value()
                 )),
-                None => return Err(alloc::format!(
-                    "declare: {arg}: not found"
-                )),
+                None => return Err(alloc::format!("declare: {arg}: not found")),
             }
         } else {
             if !is_identifier(arg) {
@@ -1061,7 +1167,10 @@ fn pushd(exec: &mut Executor, args: &[String]) -> Result<ProcStatus, String> {
         .set("OLDPWD", EnvVar::new(old).set_flags(EnvVarFlags::EXPORT))
         .ok();
     exec.env
-        .set("PWD", EnvVar::new(cake_platform::get().current_dir()).set_flags(EnvVarFlags::EXPORT))
+        .set(
+            "PWD",
+            EnvVar::new(cake_platform::get().current_dir()).set_flags(EnvVarFlags::EXPORT),
+        )
         .ok();
     out(&alloc::format!("{}\n", cake_platform::get().current_dir()));
     Ok(ProcStatus::Exit(0))
@@ -1092,7 +1201,10 @@ fn popd(exec: &mut Executor, args: &[String]) -> Result<ProcStatus, String> {
         .set("OLDPWD", EnvVar::new(target).set_flags(EnvVarFlags::EXPORT))
         .ok();
     exec.env
-        .set("PWD", EnvVar::new(cake_platform::get().current_dir()).set_flags(EnvVarFlags::EXPORT))
+        .set(
+            "PWD",
+            EnvVar::new(cake_platform::get().current_dir()).set_flags(EnvVarFlags::EXPORT),
+        )
         .ok();
     if print {
         out(&alloc::format!("{}\n", cake_platform::get().current_dir()));
@@ -1134,7 +1246,9 @@ fn getopts(exec: &mut Executor, args: &[String]) -> Result<ProcStatus, String> {
     };
 
     // Read OPTIND from env (default 1).
-    let mut idx = exec.env.get("OPTIND")
+    let mut idx = exec
+        .env
+        .get("OPTIND")
         .and_then(|v| v.value().parse::<usize>().ok())
         .unwrap_or(1);
 
@@ -1203,7 +1317,10 @@ fn getopts(exec: &mut Executor, args: &[String]) -> Result<ProcStatus, String> {
             idx += 2;
         } else {
             // Missing argument.
-            let _ = exec.env.set(varname, EnvVar::new(if silent { ':' } else { '?' }.to_string()));
+            let _ = exec.env.set(
+                varname,
+                EnvVar::new(if silent { ':' } else { '?' }.to_string()),
+            );
             let _ = exec.env.set("OPTARG", EnvVar::new(""));
             idx += 1;
         }
@@ -1229,7 +1346,7 @@ fn jobs(exec: &mut Executor, args: &[String]) -> Result<ProcStatus, String> {
             "-l" => long = true,
             "-p" | "-n" | "-r" | "-s" | "-x" => {}
             other if other.starts_with('-') => {
-                return Err(alloc::format!("cake: jobs: invalid option `{other}`"))
+                return Err(alloc::format!("cake: jobs: invalid option `{other}`"));
             }
             _ => return Err(alloc::format!("cake: jobs: no job name `{a}`")),
         }
@@ -1250,7 +1367,13 @@ fn jobs(exec: &mut Executor, args: &[String]) -> Result<ProcStatus, String> {
             None => "Running",
         };
         let mut line = if long {
-            alloc::format!("[{}]{} {} {:<27}", job.job_id, flag, job.handle.pid(), status)
+            alloc::format!(
+                "[{}]{} {} {:<27}",
+                job.job_id,
+                flag,
+                job.handle.pid(),
+                status
+            )
         } else {
             alloc::format!("[{}]{}  {:<27}", job.job_id, flag, status)
         };
@@ -1281,7 +1404,11 @@ fn wait(exec: &mut Executor, args: &[String]) -> Result<ProcStatus, String> {
             .collect();
         for h in &handles {
             let st = exec.wait_for(h);
-            if let Some(job) = exec.background.iter_mut().find(|j| j.handle.pid() == h.pid()) {
+            if let Some(job) = exec
+                .background
+                .iter_mut()
+                .find(|j| j.handle.pid() == h.pid())
+            {
                 job.status = Some(st);
             }
         }
@@ -1295,7 +1422,11 @@ fn wait(exec: &mut Executor, args: &[String]) -> Result<ProcStatus, String> {
         };
         match exec.reap_job(pid) {
             Some(st) => last = st,
-            None => return Err(alloc::format!("cake: wait: pid {pid} is not a child of this shell")),
+            None => {
+                return Err(alloc::format!(
+                    "cake: wait: pid {pid} is not a child of this shell"
+                ));
+            }
         }
     }
     Ok(last)
@@ -1316,8 +1447,6 @@ fn fg_bg(exec: &mut Executor, args: &[String], _is_fg: bool) -> Result<ProcStatu
     }
     Err(alloc::format!("cake: {}: no job control", args[0]))
 }
-
-
 
 /// `set [-euf] [+euf] [-o opt] [+o opt] [--] [arg...]` and bare `set`.
 fn set_(exec: &mut Executor, args: &[String]) -> Result<ProcStatus, String> {
@@ -1369,7 +1498,7 @@ fn set_(exec: &mut Executor, args: &[String]) -> Result<ProcStatus, String> {
                 other => {
                     return Err(alloc::format!(
                         "cake: set: -o: invalid option name `{other}`"
-                    ))
+                    ));
                 }
             }
             i += 2;
@@ -1385,11 +1514,7 @@ fn set_(exec: &mut Executor, args: &[String]) -> Result<ProcStatus, String> {
                 'v' | 'x' | 'n' | 'C' | 'm' | 'a' | 'b' => {
                     // Accepted for compatibility; not yet implemented.
                 }
-                other => {
-                    return Err(alloc::format!(
-                        "cake: set: invalid option `-{other}`"
-                    ))
-                }
+                other => return Err(alloc::format!("cake: set: invalid option `-{other}`")),
             }
         }
         i += 1;
@@ -1419,7 +1544,10 @@ fn list_set_options(exec: &Executor) {
     ];
     let mut buf = alloc::string::String::new();
     for (name, on) in opts {
-        buf.push_str(&alloc::format!("{name:<16} {}\n", if on { "on" } else { "off" }));
+        buf.push_str(&alloc::format!(
+            "{name:<16} {}\n",
+            if on { "on" } else { "off" }
+        ));
     }
     out(&buf);
 }
@@ -1444,7 +1572,7 @@ fn shopt(exec: &mut Executor, args: &[String]) -> Result<ProcStatus, String> {
             }
             "-O" | "-E" | "-S" => {}
             other if other.starts_with('-') => {
-                return Err(alloc::format!("cake: shopt: invalid option `{other}`"))
+                return Err(alloc::format!("cake: shopt: invalid option `{other}`"));
             }
             _ => break,
         }
@@ -1475,14 +1603,22 @@ fn shopt(exec: &mut Executor, args: &[String]) -> Result<ProcStatus, String> {
         if print {
             buf.push_str(&alloc::format!(
                 "shopt {0}{1} {2}\n",
-                if shopt_slot(exec, name).unwrap_or(false) { "-s" } else { "-u" },
+                if shopt_slot(exec, name).unwrap_or(false) {
+                    "-s"
+                } else {
+                    "-u"
+                },
                 " ",
                 name
             ));
         } else {
             buf.push_str(&alloc::format!(
                 "{name:<12} {}\n",
-                if shopt_slot(exec, name).unwrap_or(false) { "on" } else { "off" }
+                if shopt_slot(exec, name).unwrap_or(false) {
+                    "on"
+                } else {
+                    "off"
+                }
             ));
         }
     }
@@ -1529,7 +1665,11 @@ fn trap(exec: &mut Executor, args: &[String]) -> Result<ProcStatus, String> {
     if print {
         let mut buf = alloc::string::String::new();
         for (trigger, cmd) in &exec.traps {
-            buf.push_str(&alloc::format!("trap -- '{}' {}\n", cmd, trigger_name(*trigger)));
+            buf.push_str(&alloc::format!(
+                "trap -- '{}' {}\n",
+                cmd,
+                trigger_name(*trigger)
+            ));
         }
         out(&buf);
         return Ok(ProcStatus::Exit(0));
@@ -1593,7 +1733,13 @@ fn parse_trigger(name: &str) -> Option<TrapTrigger> {
         "SEGV" => Signal::Other(11),
         "TTIN" => Signal::Other(21),
         "TTOU" => Signal::Other(22),
-        _ => return name.parse::<i32>().ok().filter(|n| *n > 0).map(|n| TrapTrigger::Signal(Signal::Other(n))),
+        _ => {
+            return name
+                .parse::<i32>()
+                .ok()
+                .filter(|n| *n > 0)
+                .map(|n| TrapTrigger::Signal(Signal::Other(n)));
+        }
     };
     Some(TrapTrigger::Signal(sig))
 }
@@ -1622,22 +1768,55 @@ fn trigger_name(trigger: TrapTrigger) -> alloc::string::String {
 pub fn is_builtin(name: &str) -> bool {
     matches!(
         name,
-        "echo" | "printf" | "true" | ":" | "false" | "exit" | "cd" | "pwd" | "type"
-            | "export" | "unset" | "readonly" | "shift" | "command" | "alias" | "unalias"
-            | "test" | "[" | "break" | "continue" | "return" | "source" | "." | "read"
-            | "set" | "shopt" | "trap" | "jobs" | "wait" | "fg" | "bg" | "eval"
-            | "local" | "declare" | "typeset"             | "pushd" | "popd" | "dirs" | "getopts"
+        "echo"
+            | "printf"
+            | "true"
+            | ":"
+            | "false"
+            | "exit"
+            | "cd"
+            | "pwd"
+            | "type"
+            | "export"
+            | "unset"
+            | "readonly"
+            | "shift"
+            | "command"
+            | "alias"
+            | "unalias"
+            | "test"
+            | "["
+            | "break"
+            | "continue"
+            | "return"
+            | "source"
+            | "."
+            | "read"
+            | "set"
+            | "shopt"
+            | "trap"
+            | "jobs"
+            | "wait"
+            | "fg"
+            | "bg"
+            | "eval"
+            | "local"
+            | "declare"
+            | "typeset"
+            | "pushd"
+            | "popd"
+            | "dirs"
+            | "getopts"
     )
 }
 
 /// All builtin names, for `--help`.
 pub fn builtin_names() -> &'static [&'static str] {
     &[
-        "echo", "printf", "true", ":", "false", "exit", "cd", "pwd", "type", "export",
-        "unset", "readonly", "shift", "command", "alias", "unalias", "test", "[", "break",
-        "continue", "return", "source", ".", "read", "set", "shopt", "trap",
-        "jobs", "wait", "fg", "bg", "eval", "local", "declare", "typeset",
-        "pushd", "popd", "dirs", "getopts",
+        "echo", "printf", "true", ":", "false", "exit", "cd", "pwd", "type", "export", "unset",
+        "readonly", "shift", "command", "alias", "unalias", "test", "[", "break", "continue",
+        "return", "source", ".", "read", "set", "shopt", "trap", "jobs", "wait", "fg", "bg",
+        "eval", "local", "declare", "typeset", "pushd", "popd", "dirs", "getopts",
     ]
 }
 
@@ -1653,7 +1832,10 @@ mod tests {
         let mut exec = Executor::new(EnvStack::new());
         let r = alias(&mut exec, &["alias".into(), "ls=ls --color=auto".into()]).unwrap();
         assert_eq!(r, ProcStatus::Exit(0));
-        assert_eq!(exec.aliases.get("ls").map(String::as_str), Some("ls --color=auto"));
+        assert_eq!(
+            exec.aliases.get("ls").map(String::as_str),
+            Some("ls --color=auto")
+        );
     }
 
     #[test]
@@ -1683,7 +1865,8 @@ mod tests {
     fn unalias_dash_a_clears_all() {
         let mut exec = Executor::new(EnvStack::new());
         exec.aliases.insert("ls".into(), "ls --color=auto".into());
-        exec.aliases.insert("grep".into(), "grep --color=auto".into());
+        exec.aliases
+            .insert("grep".into(), "grep --color=auto".into());
         let r = unalias(&mut exec, &["unalias".into(), "-a".into()]).unwrap();
         assert_eq!(r, ProcStatus::Exit(0));
         assert!(exec.aliases.is_empty());
@@ -1699,21 +1882,45 @@ mod tests {
     fn test_binary_and_unary() {
         let a = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
         // 1 = 2 → false (exit 1)
-        assert_eq!(test_builtin(&a(&["test", "1", "=", "2"])).unwrap(), ProcStatus::Exit(1));
+        assert_eq!(
+            test_builtin(&a(&["test", "1", "=", "2"])).unwrap(),
+            ProcStatus::Exit(1)
+        );
         // 1 = 1 → true
-        assert_eq!(test_builtin(&a(&["test", "1", "=", "1"])).unwrap(), ProcStatus::Exit(0));
+        assert_eq!(
+            test_builtin(&a(&["test", "1", "=", "1"])).unwrap(),
+            ProcStatus::Exit(0)
+        );
         // 1 != 2 → true
-        assert_eq!(test_builtin(&a(&["test", "1", "!=", "2"])).unwrap(), ProcStatus::Exit(0));
+        assert_eq!(
+            test_builtin(&a(&["test", "1", "!=", "2"])).unwrap(),
+            ProcStatus::Exit(0)
+        );
         // 2 -gt 1 → true
-        assert_eq!(test_builtin(&a(&["test", "2", "-gt", "1"])).unwrap(), ProcStatus::Exit(0));
+        assert_eq!(
+            test_builtin(&a(&["test", "2", "-gt", "1"])).unwrap(),
+            ProcStatus::Exit(0)
+        );
         // -n x → true
-        assert_eq!(test_builtin(&a(&["test", "-n", "x"])).unwrap(), ProcStatus::Exit(0));
+        assert_eq!(
+            test_builtin(&a(&["test", "-n", "x"])).unwrap(),
+            ProcStatus::Exit(0)
+        );
         // -n "" → false
-        assert_eq!(test_builtin(&a(&["test", "-n", ""])).unwrap(), ProcStatus::Exit(1));
+        assert_eq!(
+            test_builtin(&a(&["test", "-n", ""])).unwrap(),
+            ProcStatus::Exit(1)
+        );
         // ! expression
-        assert_eq!(test_builtin(&a(&["test", "!", "1", "=", "2"])).unwrap(), ProcStatus::Exit(0));
+        assert_eq!(
+            test_builtin(&a(&["test", "!", "1", "=", "2"])).unwrap(),
+            ProcStatus::Exit(0)
+        );
         // [ 1 = 1 ] → true
-        assert_eq!(test_builtin(&a(&["[", "1", "=", "1", "]"])).unwrap(), ProcStatus::Exit(0));
+        assert_eq!(
+            test_builtin(&a(&["[", "1", "=", "1", "]"])).unwrap(),
+            ProcStatus::Exit(0)
+        );
         // bare `test` with no args → false
         assert_eq!(test_builtin(&a(&["test"])).unwrap(), ProcStatus::Exit(1));
     }

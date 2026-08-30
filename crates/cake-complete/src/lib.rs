@@ -122,8 +122,20 @@ fn update_ctx(lexer: &mut Lexer, tok: &cake_syntax::Token) {
             let kw = tok.text.as_str();
             if matches!(
                 kw,
-                "if" | "then" | "else" | "elif" | "for" | "do" | "while" | "until" | "case"
-                    | "function" | "select" | "time" | "in" | "!"
+                "if" | "then"
+                    | "else"
+                    | "elif"
+                    | "for"
+                    | "do"
+                    | "while"
+                    | "until"
+                    | "case"
+                    | "function"
+                    | "select"
+                    | "coproc"
+                    | "time"
+                    | "in"
+                    | "!"
             ) {
                 lexer.ctx = LexContext {
                     cmd_pos: true,

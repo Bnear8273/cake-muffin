@@ -6,7 +6,7 @@ use alloc::vec::Vec;
 use cake_proc::ProcStatus;
 
 use crate::executor::Executor;
-use crate::expand::{expand_plain_string, ExpandCtx};
+use crate::expand::{ExpandCtx, expand_plain_string};
 
 pub fn eval_cond(exec: &mut Executor, text: &str) -> ProcStatus {
     let result = {
@@ -25,7 +25,9 @@ pub fn eval_cond(exec: &mut Executor, text: &str) -> ProcStatus {
             random_state: &mut exec.random_state,
             start_time: exec.start_time,
             lineno: exec.cmd_lineno,
-            parent_pid: cake_platform::try_get().map(|p| p.parent_pid()).unwrap_or(0),
+            parent_pid: cake_platform::try_get()
+                .map(|p| p.parent_pid())
+                .unwrap_or(0),
             proc_subst_fds: &mut exec.proc_subst,
         };
         let mut p = CondParser::new(text, ctx);
@@ -79,7 +81,9 @@ impl<'a> CondParser<'a> {
                 Ok(s)
             }
             Some(other) => Err(alloc::format!("expected `{expected}`, got `{other}`")),
-            None => Err(alloc::format!("expected `{expected}`, got end of expression")),
+            None => Err(alloc::format!(
+                "expected `{expected}`, got end of expression"
+            )),
         }
     }
 
@@ -173,6 +177,72 @@ impl<'a> CondParser<'a> {
                 let path = self.expand_word()?;
                 return Ok(cake_platform::get().stat(&path).is_symlink);
             }
+            Some("-h") => {
+                self.eat();
+                let path = self.expand_word()?;
+                return Ok(cake_platform::get().stat(&path).is_symlink);
+            }
+            Some("-S") => {
+                self.eat();
+                let path = self.expand_word()?;
+                return Ok(cake_platform::get().stat(&path).is_socket);
+            }
+            Some("-b") => {
+                self.eat();
+                let path = self.expand_word()?;
+                return Ok(cake_platform::get().stat(&path).is_block_device);
+            }
+            Some("-c") => {
+                self.eat();
+                let path = self.expand_word()?;
+                return Ok(cake_platform::get().stat(&path).is_char_device);
+            }
+            Some("-p") => {
+                self.eat();
+                let path = self.expand_word()?;
+                return Ok(cake_platform::get().stat(&path).is_fifo);
+            }
+            Some("-u") => {
+                self.eat();
+                let path = self.expand_word()?;
+                return Ok(cake_platform::get().stat(&path).has_suid);
+            }
+            Some("-g") => {
+                self.eat();
+                let path = self.expand_word()?;
+                return Ok(cake_platform::get().stat(&path).has_sgid);
+            }
+            Some("-k") => {
+                self.eat();
+                let path = self.expand_word()?;
+                return Ok(cake_platform::get().stat(&path).has_sticky);
+            }
+            Some("-O") => {
+                self.eat();
+                let path = self.expand_word()?;
+                let info = cake_platform::get().stat(&path);
+                let my_uid = cake_platform::get().geteuid();
+                return Ok(info.uid == my_uid);
+            }
+            Some("-G") => {
+                self.eat();
+                let path = self.expand_word()?;
+                let info = cake_platform::get().stat(&path);
+                let my_gid = cake_platform::get().getegid();
+                return Ok(info.gid == my_gid);
+            }
+            Some("-N") => {
+                self.eat();
+                let path = self.expand_word()?;
+                let info = cake_platform::get().stat(&path);
+                return Ok(info.mtime > info.atime);
+            }
+            Some("-t") => {
+                self.eat();
+                let fd_word = self.expand_word()?;
+                let fd: u32 = fd_word.trim().parse().unwrap_or(0);
+                return Ok(cake_platform::get().is_terminal_fd(fd));
+            }
             _ => {}
         }
 
@@ -181,7 +251,9 @@ impl<'a> CondParser<'a> {
         let op = self.eat().ok_or_else(|| "expected operator".to_string())?;
         // For `=~`, expand variables but don't glob the RHS (bash behavior).
         let rhs = if op == "=~" {
-            let raw = self.eat().ok_or_else(|| "expected regex pattern".to_string())?;
+            let raw = self
+                .eat()
+                .ok_or_else(|| "expected regex pattern".to_string())?;
             let fields = expand_plain_string(&mut self.ctx, &raw)
                 .map_err(|e| alloc::format!("expansion error: {e}"))?;
             fields.into_iter().next().unwrap_or_default()
@@ -191,14 +263,12 @@ impl<'a> CondParser<'a> {
 
         match op.as_str() {
             // `[[ x == pat ]]` pattern-matches (extglob always active, bash).
-            "=" | "==" => {
-                Ok(crate::glob::glob_match_ext(&rhs, &lhs, false, true))
-            }
+            "=" | "==" => Ok(crate::glob::glob_match_ext(&rhs, &lhs, false, true)),
             "!=" => Ok(!crate::glob::glob_match_ext(&rhs, &lhs, false, true)),
             "=~" => {
                 // `[[ x =~ regex ]]` — POSIX extended regex match.
-                let re = regex::Regex::new(&rhs)
-                    .map_err(|e| alloc::format!("cake: [[ =~ ]]: {e}"))?;
+                let re =
+                    regex::Regex::new(&rhs).map_err(|e| alloc::format!("cake: [[ =~ ]]: {e}"))?;
                 Ok(re.is_match(&lhs))
             }
             "<" => Ok(lhs < rhs),
@@ -209,6 +279,21 @@ impl<'a> CondParser<'a> {
             "-le" => Ok(parse_num(&lhs) <= parse_num(&rhs)),
             "-gt" => Ok(parse_num(&lhs) > parse_num(&rhs)),
             "-ge" => Ok(parse_num(&lhs) >= parse_num(&rhs)),
+            "-nt" => {
+                let info_lhs = cake_platform::get().stat(&lhs);
+                let info_rhs = cake_platform::get().stat(&rhs);
+                Ok(info_lhs.mtime > info_rhs.mtime)
+            }
+            "-ot" => {
+                let info_lhs = cake_platform::get().stat(&lhs);
+                let info_rhs = cake_platform::get().stat(&rhs);
+                Ok(info_lhs.mtime < info_rhs.mtime)
+            }
+            "-ef" => {
+                let info_lhs = cake_platform::get().stat(&lhs);
+                let info_rhs = cake_platform::get().stat(&rhs);
+                Ok(info_lhs.dev == info_rhs.dev && info_lhs.ino == info_rhs.ino)
+            }
             other => Err(alloc::format!("unknown operator `{other}`")),
         }
     }
@@ -285,7 +370,12 @@ fn tokenize_cond(text: &str) -> Vec<String> {
         }
         // Extglob group `?(...)` `*(...)` `+(...)` `@(...)` `!(...)` stays
         // one token.
-        if c == '(' && matches!(cur.chars().last(), Some('?') | Some('*') | Some('+') | Some('@') | Some('!')) {
+        if c == '('
+            && matches!(
+                cur.chars().last(),
+                Some('?') | Some('*') | Some('+') | Some('@') | Some('!')
+            )
+        {
             let mut depth = 1;
             cur.push(c);
             for ch in chars.by_ref() {

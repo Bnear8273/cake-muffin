@@ -41,7 +41,10 @@ enum PNode {
     /// `*` — any run of bytes.
     Star,
     /// `[...]`
-    Class { negated: bool, ranges: Vec<(u8, u8)> },
+    Class {
+        negated: bool,
+        ranges: Vec<(u8, u8)>,
+    },
     /// `?(p)` `*(p)` `+(p)` `@(p)` `!(p)`.
     Group { op: u8, alts: Vec<Vec<PNode>> },
 }
@@ -67,7 +70,10 @@ fn parse_nodes(pat: &[u8], i: &mut usize, extglob: bool, top: bool) -> Vec<PNode
             }
             b'[' => nodes.push(parse_class(pat, i)),
             b')' | b'|' if !top => break,
-            b'(' if extglob && *i > 0 && matches!(pat[*i - 1], b'?' | b'*' | b'+' | b'@' | b'!') => {
+            b'(' if extglob
+                && *i > 0
+                && matches!(pat[*i - 1], b'?' | b'*' | b'+' | b'@' | b'!') =>
+            {
                 let op = pat[*i - 1];
                 nodes.pop(); // drop the opener byte parsed as a literal
                 *i += 1;
@@ -142,7 +148,10 @@ fn parse_class(pat: &[u8], i: &mut usize) -> PNode {
     }
     // Unterminated class: treat `[` as a literal.
     *i = start + 1;
-    PNode::Class { negated: false, ranges: vec![(b'[', b'[')] }
+    PNode::Class {
+        negated: false,
+        ranges: vec![(b'[', b'[')],
+    }
 }
 
 /// Find the closing `:` in a POSIX class `[:name:]` inside a bracket expression.
@@ -169,12 +178,14 @@ fn posix_class_ranges(name: &[u8]) -> Option<Vec<(u8, u8)>> {
         b"graph" => Some(vec![(b'!', b'~')]),
         b"lower" => Some(vec![(b'a', b'z')]),
         b"print" => Some(vec![(b' ', b'~')]),
-        b"punct" => Some(vec![
-            (b'!', b'/'), (b':', b'@'), (b'[', b'`'), (b'{', b'~'),
-        ]),
+        b"punct" => Some(vec![(b'!', b'/'), (b':', b'@'), (b'[', b'`'), (b'{', b'~')]),
         b"space" => Some(vec![
-            (b' ', b' '), (b'\t', b'\t'), (b'\n', b'\n'),
-            (b'\x0b', b'\x0b'), (b'\x0c', b'\x0c'), (b'\r', b'\r'),
+            (b' ', b' '),
+            (b'\t', b'\t'),
+            (b'\n', b'\n'),
+            (b'\x0b', b'\x0b'),
+            (b'\x0c', b'\x0c'),
+            (b'\r', b'\r'),
         ]),
         b"upper" => Some(vec![(b'A', b'Z')]),
         b"xdigit" => Some(vec![(b'0', b'9'), (b'A', b'F'), (b'a', b'f')]),
@@ -186,7 +197,11 @@ fn class_matches(c: u8, negated: bool, ranges: &[(u8, u8)], nocase: bool) -> boo
     let c = if nocase { fold(c) } else { c };
     let mut matched = false;
     for (lo, hi) in ranges {
-        let (lo, hi) = if nocase { (fold(*lo), fold(*hi)) } else { (*lo, *hi) };
+        let (lo, hi) = if nocase {
+            (fold(*lo), fold(*hi))
+        } else {
+            (*lo, *hi)
+        };
         if lo <= c && c <= hi {
             matched = true;
             break;
@@ -222,9 +237,7 @@ fn match_nodes(
                 && (*c == text[t] || (nocase && fold(*c) == fold(text[t])))
                 && match_nodes(nodes, text, t + 1, end, i + 1, memo, nocase)
         }
-        PNode::Any => {
-            t < end && match_nodes(nodes, text, t + 1, end, i + 1, memo, nocase)
-        }
+        PNode::Any => t < end && match_nodes(nodes, text, t + 1, end, i + 1, memo, nocase),
         PNode::Star => {
             let mut k = end;
             loop {
@@ -328,7 +341,13 @@ pub fn has_glob_chars_ext(s: &str, extglob: bool) -> bool {
 /// directories (including none) recursively. Results are sorted (bash sorts
 /// lexicographically). Returns an empty `Vec` when nothing matches (the
 /// caller keeps the literal pattern).
-pub fn expand_glob(pattern: &str, dotglob: bool, nocaseglob: bool, extglob: bool, globstar: bool) -> Vec<String> {
+pub fn expand_glob(
+    pattern: &str,
+    dotglob: bool,
+    nocaseglob: bool,
+    extglob: bool,
+    globstar: bool,
+) -> Vec<String> {
     let p = cake_platform::get();
     let abs = pattern.starts_with('/');
     let parts: Vec<&str> = pattern
@@ -370,14 +389,19 @@ pub fn expand_glob(pattern: &str, dotglob: bool, nocaseglob: bool, extglob: bool
                 let dirs_only = i + 1 < parts.len();
                 collect_recursive(p, dir, &mut entries, sep, dirs_only, dotglob);
                 // For zero-length ** matches: include the base dir itself.
-                if !dir.is_empty() && dir != "." && !entries.contains(&alloc::string::ToString::to_string(dir)) {
+                if !dir.is_empty()
+                    && dir != "."
+                    && !entries.contains(&alloc::string::ToString::to_string(dir))
+                {
                     entries.insert(0, alloc::string::ToString::to_string(dir));
                 }
                 // collect_recursive already builds full paths from `dir`.
                 // For relative patterns rooted at ".", strip the "./" prefix.
                 if !abs && (i == 0 && base.is_empty()) {
                     for e in entries {
-                        if let Some(stripped) = e.strip_prefix("./").or_else(|| e.strip_prefix(".\\")) {
+                        if let Some(stripped) =
+                            e.strip_prefix("./").or_else(|| e.strip_prefix(".\\"))
+                        {
                             next.push(alloc::string::ToString::to_string(stripped));
                             next_gs.push(true);
                         } else {

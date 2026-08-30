@@ -7,8 +7,8 @@ use std::vec::Vec;
 
 use cake_platform::{
     Fd, FileInfo, FileOpenMode, Platform, PlatformError, ProcessError, ProcessGroupId,
-    ProcessHandle, Signal, SignalMask, SpawnConfig, Termios, TerminalSize, WaitOptions,
-    WaitStatus, XdgKind,
+    ProcessHandle, Signal, SignalMask, SpawnConfig, TerminalSize, Termios, WaitOptions, WaitStatus,
+    XdgKind,
 };
 
 /// A mock platform that records all spawned commands and returns
@@ -203,7 +203,9 @@ impl Platform for MockPlatform {
     }
 
     fn run_in_child(&self, _f: &mut dyn FnMut() -> i32) -> Result<ProcessHandle, ProcessError> {
-        Err(ProcessError::Other("run_in_child not supported by mock".into()))
+        Err(ProcessError::Other(
+            "run_in_child not supported by mock".into(),
+        ))
     }
 
     fn is_executable(&self, _path: &str) -> bool {
@@ -220,6 +222,18 @@ impl Platform for MockPlatform {
 
     fn stat(&self, _path: &str) -> FileInfo {
         FileInfo::default()
+    }
+
+    fn is_terminal_fd(&self, _fd: u32) -> bool {
+        false
+    }
+
+    fn geteuid(&self) -> u32 {
+        0
+    }
+
+    fn getegid(&self) -> u32 {
+        0
     }
 
     fn read_dir(&self, _path: &str) -> Result<Vec<String>, PlatformError> {

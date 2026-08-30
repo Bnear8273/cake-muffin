@@ -13,9 +13,9 @@ extern crate alloc;
 
 use alloc::string::String;
 
+use cake_syntax::Token;
 use cake_syntax::lexer::{LexContext, Lexer};
 use cake_syntax::token::TokenKind::*;
-use cake_syntax::Token;
 
 /// Highlight a single line of shell input.
 ///
@@ -66,17 +66,18 @@ pub fn highlight_line(src: &str, is_command: &dyn Fn(&str) -> bool) -> String {
 fn color_for(tok: &Token, was_cmd: bool, is_command: &dyn Fn(&str) -> bool) -> &'static str {
     match tok.kind {
         Word if was_cmd && is_keyword(tok.text.as_str()) => "\x1b[1;35m", // magenta bold (keyword)
-        Word if was_cmd && is_command(tok.text.as_str()) => "\x1b[32m",    // green (command found)
-        Word if was_cmd => "\x1b[31m",                                     // red (command not found)
-        Word => "\x1b[0m",                                                  // default
-        Assignment => "\x1b[36m",                                           // cyan
-        Lparen | Rparen | Lbrace | Rbrace | Bang => "\x1b[1;36m",          // cyan bold
+        Word if was_cmd && is_command(tok.text.as_str()) => "\x1b[32m",   // green (command found)
+        Word if was_cmd => "\x1b[31m",                                    // red (command not found)
+        Word => "\x1b[0m",                                                // default
+        Assignment => "\x1b[36m",                                         // cyan
+        Lparen | Rparen | Lbrace | Rbrace | Bang => "\x1b[1;36m",         // cyan bold
         DoubleBracketOpen | DoubleBracketClose => "\x1b[1;36m",
         ArithOpen => "\x1b[1;36m",
         AndAnd | OrOr | Pipe | PipeAmp | Semi | SemiSemi | Amp => "\x1b[1;36m",
-        Greater | GreatGreat | Less | LessLess | LessLessLess | LessLessDash
-        | GreaterAnd | LessAnd | AmpGreat | AmpGreatGreat | GreatBar | LessGreat
-        | LessGreatGreat => "\x1b[1;36m",
+        Greater | GreatGreat | Less | LessLess | LessLessLess | LessLessDash | GreaterAnd
+        | LessAnd | AmpGreat | AmpGreatGreat | GreatBar | LessGreat | LessGreatGreat => {
+            "\x1b[1;36m"
+        }
         IoNumber => "\x1b[35m",
         Newline => "\x1b[90m",
         _ => "\x1b[0m",
@@ -86,12 +87,22 @@ fn color_for(tok: &Token, was_cmd: bool, is_command: &dyn Fn(&str) -> bool) -> &
 fn is_keyword(s: &str) -> bool {
     matches!(
         s,
-        "if" | "then" | "else" | "elif" | "fi"
-            | "for" | "do" | "done" | "in"
-            | "while" | "until"
-            | "case" | "esac"
+        "if" | "then"
+            | "else"
+            | "elif"
+            | "fi"
+            | "for"
+            | "do"
+            | "done"
+            | "in"
+            | "while"
+            | "until"
+            | "case"
+            | "esac"
             | "function"
-            | "select" | "time"
+            | "select"
+            | "coproc"
+            | "time"
             | "!"
     )
 }
@@ -102,8 +113,20 @@ fn update_ctx(lexer: &mut Lexer, tok: &Token) {
         Word => {
             if matches!(
                 tok.text.as_str(),
-                "if" | "then" | "else" | "elif" | "for" | "do" | "while" | "until"
-                    | "case" | "function" | "select" | "time" | "in" | "!"
+                "if" | "then"
+                    | "else"
+                    | "elif"
+                    | "for"
+                    | "do"
+                    | "while"
+                    | "until"
+                    | "case"
+                    | "function"
+                    | "select"
+                    | "coproc"
+                    | "time"
+                    | "in"
+                    | "!"
             ) {
                 lexer.ctx = LexContext {
                     cmd_pos: true,
@@ -142,9 +165,8 @@ fn update_ctx(lexer: &mut Lexer, tok: &Token) {
                 ..Default::default()
             };
         }
-        Greater | GreatGreat | Less | LessLess | LessLessLess | LessLessDash
-        | GreaterAnd | LessAnd | AmpGreat | AmpGreatGreat | GreatBar | LessGreat
-        | LessGreatGreat => {
+        Greater | GreatGreat | Less | LessLess | LessLessLess | LessLessDash | GreaterAnd
+        | LessAnd | AmpGreat | AmpGreatGreat | GreatBar | LessGreat | LessGreatGreat => {
             lexer.ctx = LexContext {
                 cmd_pos: true,
                 in_redir: true,

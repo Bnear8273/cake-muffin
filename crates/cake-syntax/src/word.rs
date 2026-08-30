@@ -191,7 +191,9 @@ fn scan(text: &str, base: Offset, in_dquotes: bool) -> Vec<WordPart> {
             '<' | '>' => {
                 // Process substitution `<(cmd)` / `>(cmd)`: scan to the
                 // matching `)`. Inside double quotes it is literal (bash).
-                if !in_dquotes && i + 1 < n && text[i + 1..].starts_with('(')
+                if !in_dquotes
+                    && i + 1 < n
+                    && text[i + 1..].starts_with('(')
                     && let Some(close) = find_paren(text, i + 1)
                 {
                     flush_lit!();
@@ -244,7 +246,13 @@ fn scan_dollar(text: &str, i: usize, base: Offset) -> (WordPart, usize) {
     let cl = 1; // '$'
     let next_i = i + cl;
     if next_i >= text.len() {
-        return (WordPart::Literal("$".into(), Span::new(base + i as Offset, base + next_i as Offset)), next_i);
+        return (
+            WordPart::Literal(
+                "$".into(),
+                Span::new(base + i as Offset, base + next_i as Offset),
+            ),
+            next_i,
+        );
     }
     let c = text[next_i..].chars().next().unwrap();
     match c {
@@ -263,7 +271,10 @@ fn scan_dollar(text: &str, i: usize, base: Offset) -> (WordPart, usize) {
                         )
                     }
                     None => (
-                        WordPart::Literal("$".into(), Span::new(base + i as Offset, base + next_i as Offset)),
+                        WordPart::Literal(
+                            "$".into(),
+                            Span::new(base + i as Offset, base + next_i as Offset),
+                        ),
                         next_i,
                     ),
                 }
@@ -281,53 +292,58 @@ fn scan_dollar(text: &str, i: usize, base: Offset) -> (WordPart, usize) {
                         )
                     }
                     None => (
-                        WordPart::Literal("$".into(), Span::new(base + i as Offset, base + next_i as Offset)),
+                        WordPart::Literal(
+                            "$".into(),
+                            Span::new(base + i as Offset, base + next_i as Offset),
+                        ),
                         next_i,
                     ),
                 }
             }
         }
-        '{' => {
-            match find_braced(text, next_i + 1) {
-                Some(close) => {
-                    let inner = &text[next_i + 1..close];
-                    let name = braced_name(inner).to_owned();
-                    (
-                        WordPart::Parameter(
-                            Parameter {
-                                name,
-                                braced: true,
-                                text: text[i..=close].to_owned(),
-                            },
-                            Span::new(base + i as Offset, base + close as Offset + 1),
-                        ),
-                        close + 1,
-                    )
-                }
-                None => (
-                    WordPart::Literal("$".into(), Span::new(base + i as Offset, base + next_i as Offset)),
-                    next_i,
-                ),
+        '{' => match find_braced(text, next_i + 1) {
+            Some(close) => {
+                let inner = &text[next_i + 1..close];
+                let name = braced_name(inner).to_owned();
+                (
+                    WordPart::Parameter(
+                        Parameter {
+                            name,
+                            braced: true,
+                            text: text[i..=close].to_owned(),
+                        },
+                        Span::new(base + i as Offset, base + close as Offset + 1),
+                    ),
+                    close + 1,
+                )
             }
-        }
-        '\'' => {
-match find_simple_quote(text, next_i + 1, '\'') {
-                    Some(close) => {
-                        let content = text[next_i + 1..close].to_owned();
-                    (
-                        WordPart::AnsiCQuoted(
-                            content,
-                            Span::new(base + i as Offset, base + close as Offset + 1),
-                        ),
-                        close + 1,
-                    )
-                }
-                None => (
-                    WordPart::Literal("$".into(), Span::new(base + i as Offset, base + next_i as Offset)),
-                    next_i,
+            None => (
+                WordPart::Literal(
+                    "$".into(),
+                    Span::new(base + i as Offset, base + next_i as Offset),
                 ),
+                next_i,
+            ),
+        },
+        '\'' => match find_simple_quote(text, next_i + 1, '\'') {
+            Some(close) => {
+                let content = text[next_i + 1..close].to_owned();
+                (
+                    WordPart::AnsiCQuoted(
+                        content,
+                        Span::new(base + i as Offset, base + close as Offset + 1),
+                    ),
+                    close + 1,
+                )
             }
-        }
+            None => (
+                WordPart::Literal(
+                    "$".into(),
+                    Span::new(base + i as Offset, base + next_i as Offset),
+                ),
+                next_i,
+            ),
+        },
         '"' => {
             // $"..." — locale quoting, treat as a double-quoted string.
             match find_dquote(text, next_i + 1) {
@@ -342,7 +358,10 @@ match find_simple_quote(text, next_i + 1, '\'') {
                     )
                 }
                 None => (
-                    WordPart::Literal("$".into(), Span::new(base + i as Offset, base + next_i as Offset)),
+                    WordPart::Literal(
+                        "$".into(),
+                        Span::new(base + i as Offset, base + next_i as Offset),
+                    ),
                     next_i,
                 ),
             }
@@ -390,7 +409,10 @@ match find_simple_quote(text, next_i + 1, '\'') {
 /// `/`/`[` operator). Returns `""` for `${...}` special forms.
 fn braced_name(inner: &str) -> &str {
     for (idx, ch) in inner.char_indices() {
-        if matches!(ch, ':' | '#' | '%' | '/' | '[' | '}' | '=' | '+' | '?' | '-' | '^' | ',' | '!' | '@') {
+        if matches!(
+            ch,
+            ':' | '#' | '%' | '/' | '[' | '}' | '=' | '+' | '?' | '-' | '^' | ',' | '!' | '@'
+        ) {
             return &inner[..idx];
         }
     }
@@ -586,7 +608,8 @@ fn find_arith(text: &str, start: usize) -> Option<usize> {
             }
             '$' => {
                 let cl = c.len_utf8();
-                if i + cl < text.len() && text[i + cl..].starts_with('(')
+                if i + cl < text.len()
+                    && text[i + cl..].starts_with('(')
                     && text[i + cl + 1..].starts_with('(')
                     && let Some(e) = find_arith(text, i + cl + 2)
                 {
@@ -616,7 +639,8 @@ fn find_braced(text: &str, start: usize) -> Option<usize> {
             }
             '$' => {
                 let cl = c.len_utf8();
-                if i + cl < text.len() && text[i + cl..].starts_with('{')
+                if i + cl < text.len()
+                    && text[i + cl..].starts_with('{')
                     && let Some(e) = find_braced(text, i + cl + 1)
                 {
                     i = e + 1;

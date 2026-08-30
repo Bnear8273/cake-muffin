@@ -25,11 +25,7 @@ fn run(cmd: &str, args: &[&str], input: &str) -> ShellResult {
         .spawn()
         .and_then(|mut child| {
             use std::io::Write;
-            child
-                .stdin
-                .take()
-                .unwrap()
-                .write_all(input.as_bytes())?;
+            child.stdin.take().unwrap().write_all(input.as_bytes())?;
             child.wait_with_output()
         })
         .expect("failed to run");
@@ -251,8 +247,5 @@ fn builtins() {
 
 #[test]
 fn assignments_are_not_temporary() {
-    shell_eq!(
-        "A=1; echo $A; A=2; echo $A",
-        "x=1 y=2; echo $x $y",
-    );
+    shell_eq!("A=1; echo $A; A=2; echo $A", "x=1 y=2; echo $x $y",);
 }

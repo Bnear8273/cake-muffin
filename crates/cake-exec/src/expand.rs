@@ -156,8 +156,13 @@ fn expand_fields(
     let mut out = Vec::new();
     for (i, f) in fields.iter().enumerate() {
         if glob_ok[i] && crate::glob::has_glob_chars_ext(f, ctx.shopt.extglob) {
-            let matches =
-                crate::glob::expand_glob(f, ctx.shopt.dotglob, ctx.shopt.nocaseglob, ctx.shopt.extglob, ctx.shopt.globstar);
+            let matches = crate::glob::expand_glob(
+                f,
+                ctx.shopt.dotglob,
+                ctx.shopt.nocaseglob,
+                ctx.shopt.extglob,
+                ctx.shopt.globstar,
+            );
             if !matches.is_empty() {
                 out.extend(matches);
                 continue;
@@ -453,7 +458,11 @@ fn expand_process_subst(ctx: &mut ExpandCtx, raw: &str) -> Result<PartOut, Strin
 
 /// Evaluate `cmd` in a forked child with stdout captured, then strip all
 /// trailing newlines (bash semantics).
-fn expand_command_subst(ctx: &mut ExpandCtx, cmd: &str, in_dquotes: bool) -> Result<PartOut, String> {
+fn expand_command_subst(
+    ctx: &mut ExpandCtx,
+    cmd: &str,
+    in_dquotes: bool,
+) -> Result<PartOut, String> {
     // `$(<file)` — read a file instead of running a sub-shell (bash).
     if let Some(rest) = cmd.trim_start().strip_prefix('<') {
         let path_text = rest.trim_start();
@@ -537,7 +546,11 @@ fn next_random(state: &mut u32) -> u32 {
 }
 
 /// Expand `$name` / `${...}`.
-fn expand_parameter(ctx: &mut ExpandCtx, p: &Parameter, in_dquotes: bool) -> Result<PartOut, String> {
+fn expand_parameter(
+    ctx: &mut ExpandCtx,
+    p: &Parameter,
+    in_dquotes: bool,
+) -> Result<PartOut, String> {
     let (name, index, op) = parse_param(&p.text);
     if !matches!(op, ParamOp::Normal) {
         return apply_param_op(ctx, &name, index, op, in_dquotes);
@@ -605,7 +618,9 @@ fn expand_parameter(ctx: &mut ExpandCtx, p: &Parameter, in_dquotes: bool) -> Res
 
     // Positional parameters $1..$9, and ${10}... in the braced form.
     if !name.is_empty() && name.chars().all(|c| c.is_ascii_digit()) {
-        let idx: usize = name.parse().map_err(|_| alloc::format!("bad param `{name}`"))?;
+        let idx: usize = name
+            .parse()
+            .map_err(|_| alloc::format!("bad param `{name}`"))?;
         return Ok(match params.get(idx.saturating_sub(1)) {
             Some(v) if in_dquotes => PartOut::Append(v.clone()),
             Some(v) => PartOut::Split(v.clone()),
@@ -695,18 +710,30 @@ fn parse_param(text: &str) -> (String, Option<String>, ParamOp) {
     if let Some(rest) = inner.strip_prefix('#')
         && !rest.is_empty()
     {
-        return (base_name(rest).to_owned(), split_index(rest), ParamOp::Length);
+        return (
+            base_name(rest).to_owned(),
+            split_index(rest),
+            ParamOp::Length,
+        );
     }
     // `${!name}` — indirect expansion: look up the variable named by `name`.
     if let Some(rest) = inner.strip_prefix('!')
         && !rest.is_empty()
     {
-        return (base_name(rest).to_owned(), split_index(rest), ParamOp::Indirect);
+        return (
+            base_name(rest).to_owned(),
+            split_index(rest),
+            ParamOp::Indirect,
+        );
     }
     // `${var@Q}` — quote escaping.
     if let Some(at_q) = inner.find("@Q") {
         let name = &inner[..at_q];
-        return (base_name(name).to_owned(), split_index(name), ParamOp::QuoteEscape);
+        return (
+            base_name(name).to_owned(),
+            split_index(name),
+            ParamOp::QuoteEscape,
+        );
     }
     const OP_CHARS: [char; 11] = [':', '#', '%', '/', '=', '+', '?', '-', '^', ',', '['];
     let name_end = inner.find(OP_CHARS).unwrap_or(inner.len());
@@ -825,12 +852,21 @@ fn array_values(ctx: &ExpandCtx, name: &str) -> Vec<String> {
     };
     match name {
         "@" | "*" => params.to_vec(),
-        _ => ctx.env.get(name).map(|v| v.values().to_vec()).unwrap_or_default(),
+        _ => ctx
+            .env
+            .get(name)
+            .map(|v| v.values().to_vec())
+            .unwrap_or_default(),
     }
 }
 
 /// Expand `${arr[idx]}` (Normal op with index). `@`/`*` → all elements.
-fn expand_indexed(ctx: &mut ExpandCtx, name: &str, idx: &str, in_dquotes: bool) -> Result<PartOut, String> {
+fn expand_indexed(
+    ctx: &mut ExpandCtx,
+    name: &str,
+    idx: &str,
+    in_dquotes: bool,
+) -> Result<PartOut, String> {
     let values = array_values(ctx, name);
     if idx == "@" || idx == "*" {
         if in_dquotes && idx == "@" {
@@ -862,10 +898,16 @@ fn expand_indexed(ctx: &mut ExpandCtx, name: &str, idx: &str, in_dquotes: bool) 
     }
 }
 
-fn apply_param_op(ctx: &mut ExpandCtx, name: &str, index: Option<String>, op: ParamOp, in_dquotes: bool) -> Result<PartOut, String> {
+fn apply_param_op(
+    ctx: &mut ExpandCtx,
+    name: &str,
+    index: Option<String>,
+    op: ParamOp,
+    in_dquotes: bool,
+) -> Result<PartOut, String> {
     // Resolve the value (single string) for the name/index.
     let value: Option<String> = match &index {
-        Some(idx) if idx == "@" || idx == "*" => None,  // handled specially
+        Some(idx) if idx == "@" || idx == "*" => None, // handled specially
         Some(idx) => {
             let values = array_values(ctx, name);
             let n = crate::arith::eval_arith_value(ctx.env, idx)
@@ -892,13 +934,21 @@ fn apply_param_op(ctx: &mut ExpandCtx, name: &str, index: Option<String>, op: Pa
             let v = value.unwrap_or_default();
             let (off, len) = parse_substring(&spec);
             let n = v.chars().count() as i64;
-            let start = if off < 0 { (n + off).max(0) } else { off.min(n) };
+            let start = if off < 0 {
+                (n + off).max(0)
+            } else {
+                off.min(n)
+            };
             let end = match len {
                 Some(l) if l < 0 => (n + l).max(start) as usize,
                 Some(l) => ((start + l).min(n)).max(0) as usize,
                 None => n as usize,
             };
-            let s: String = v.chars().skip(start as usize).take(end.saturating_sub(start as usize)).collect();
+            let s: String = v
+                .chars()
+                .skip(start as usize)
+                .take(end.saturating_sub(start as usize))
+                .collect();
             Ok(part_value(&Some(s), in_dquotes))
         }
         ParamOp::Default(word, colon) => {
@@ -953,18 +1003,27 @@ fn apply_param_op(ctx: &mut ExpandCtx, name: &str, index: Option<String>, op: Pa
         ParamOp::RemovePrefix(pat, longest) => {
             let v = value.unwrap_or_default();
             let pat = expand_operand(ctx, &pat)?;
-            Ok(part_value(&Some(trim_prefix(&v, &pat, longest)), in_dquotes))
+            Ok(part_value(
+                &Some(trim_prefix(&v, &pat, longest)),
+                in_dquotes,
+            ))
         }
         ParamOp::RemoveSuffix(pat, longest) => {
             let v = value.unwrap_or_default();
             let pat = expand_operand(ctx, &pat)?;
-            Ok(part_value(&Some(trim_suffix(&v, &pat, longest)), in_dquotes))
+            Ok(part_value(
+                &Some(trim_suffix(&v, &pat, longest)),
+                in_dquotes,
+            ))
         }
         ParamOp::Replace(pat, repl, kind) => {
             let v = value.unwrap_or_default();
             let pat = expand_operand(ctx, &pat)?;
             let repl = expand_operand(ctx, &repl)?;
-            Ok(part_value(&Some(replace_glob(&v, &pat, &repl, kind)), in_dquotes))
+            Ok(part_value(
+                &Some(replace_glob(&v, &pat, &repl, kind)),
+                in_dquotes,
+            ))
         }
         ParamOp::Upper(all) => {
             let v = value.unwrap_or_default();
@@ -1048,7 +1107,12 @@ fn shell_quote(s: &str) -> String {
 fn parse_substring(spec: &str) -> (i64, Option<i64>) {
     let spec = spec.trim();
     let mut parts = spec.splitn(2, ':');
-    let off = parts.next().unwrap_or("").trim().parse::<i64>().unwrap_or(0);
+    let off = parts
+        .next()
+        .unwrap_or("")
+        .trim()
+        .parse::<i64>()
+        .unwrap_or(0);
     let len = parts.next().map(|s| s.trim().parse::<i64>().unwrap_or(0));
     (off, len)
 }
@@ -1204,7 +1268,10 @@ fn split_fields(
 /// to `$HOME` when the user matches the current user name.
 fn expand_tilde(env: &EnvStack, text: &str) -> String {
     if text == "~" {
-        return env.get("HOME").map(|v| v.value().to_owned()).unwrap_or_default();
+        return env
+            .get("HOME")
+            .map(|v| v.value().to_owned())
+            .unwrap_or_default();
     }
     let rest = &text[1..];
     let (user, path) = match rest.find('/') {
@@ -1213,12 +1280,23 @@ fn expand_tilde(env: &EnvStack, text: &str) -> String {
     };
     if user.is_empty() {
         // `~/...`
-        let home = env.get("HOME").map(|v| v.value().to_owned()).unwrap_or_default();
+        let home = env
+            .get("HOME")
+            .map(|v| v.value().to_owned())
+            .unwrap_or_default();
         return alloc::format!("{home}{path}");
     }
     // `~user`: best-effort via $HOME when the user is the current one.
-    if user == env.get("USER").map(|v| v.value().to_owned()).unwrap_or_default() {
-        let home = env.get("HOME").map(|v| v.value().to_owned()).unwrap_or_default();
+    if user
+        == env
+            .get("USER")
+            .map(|v| v.value().to_owned())
+            .unwrap_or_default()
+    {
+        let home = env
+            .get("HOME")
+            .map(|v| v.value().to_owned())
+            .unwrap_or_default();
         return alloc::format!("{home}{path}");
     }
     // Unknown user: leave literal.
@@ -1416,7 +1494,10 @@ mod tests {
     fn param_assign_writes_env() {
         let mut env = EnvStack::new();
         assert_eq!(expand_str(&mut env, "${x:=hello}"), ["hello"]);
-        assert_eq!(env.get("x").map(|v| v.value().to_owned()), Some("hello".into()));
+        assert_eq!(
+            env.get("x").map(|v| v.value().to_owned()),
+            Some("hello".into())
+        );
     }
 
     #[test]

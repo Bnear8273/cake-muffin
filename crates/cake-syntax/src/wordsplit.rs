@@ -99,7 +99,10 @@ mod tests {
 
     #[test]
     fn splits_simple() {
-        assert_eq!(split_command_line("echo hello world").unwrap(), ["echo", "hello", "world"]);
+        assert_eq!(
+            split_command_line("echo hello world").unwrap(),
+            ["echo", "hello", "world"]
+        );
     }
 
     #[test]
@@ -109,14 +112,23 @@ mod tests {
 
     #[test]
     fn single_quotes() {
-        assert_eq!(split_command_line("echo 'hello world'").unwrap(), ["echo", "hello world"]);
+        assert_eq!(
+            split_command_line("echo 'hello world'").unwrap(),
+            ["echo", "hello world"]
+        );
         assert_eq!(split_command_line("echo 'it''s'").unwrap(), ["echo", "its"]);
     }
 
     #[test]
     fn double_quotes() {
-        assert_eq!(split_command_line("echo \"hello world\"").unwrap(), ["echo", "hello world"]);
-        assert_eq!(split_command_line("echo \"a\\\"b\"").unwrap(), ["echo", "a\"b"]);
+        assert_eq!(
+            split_command_line("echo \"hello world\"").unwrap(),
+            ["echo", "hello world"]
+        );
+        assert_eq!(
+            split_command_line("echo \"a\\\"b\"").unwrap(),
+            ["echo", "a\"b"]
+        );
     }
 
     #[test]
