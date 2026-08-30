@@ -486,40 +486,34 @@ impl<'a> Parser<'a> {
             match self.current.kind {
                 TokenKind::Lparen => depth += 1,
                 TokenKind::Rparen => {
-                    if depth == 0 {
-                        // Check for closing ))
-                        if self.peek() == TokenKind::Rparen {
-                            let text = self.src
-                                [tok_start as usize..self.current.span.start as usize]
-                                .to_owned();
-                            self.advance(); // consume first )
-                            self.advance(); // consume token after ))
-                            self.set_cmd(); // restore command context for body
-                            // Split text on ';' to get init, cond, incr
-                            let parts = split_arith_for(&text);
-                            let init = parts.0;
-                            let cond = parts.1;
-                            let incr = parts.2;
-                            // Skip optional separator before 'do'
-                            self.skip_optional_sep();
-                            self.expect_keyword("do")?;
-                            let body =
-                                self.parse_list(|t| t.kind == TokenKind::Word && t.text == "done")?;
-                            self.skip_optional_sep();
-                            self.expect_keyword("done")?;
-                            return Ok(CommandKind::CStyleFor(CStyleForCommand {
-                                init,
-                                cond,
-                                incr,
-                                body,
-                                span: Span::new(start, self.current.span.start),
-                            }));
-                        }
-                        // Single ) inside arithmetic, not balanced
-                        depth -= 1;
-                    } else {
-                        depth -= 1;
+                    // `))` at depth 0 closes the outer `((…))`.
+                    if depth == 0 && self.peek() == TokenKind::Rparen {
+                        let text = self.src[tok_start as usize..self.current.span.start as usize]
+                            .to_owned();
+                        self.advance(); // consume first )
+                        self.advance(); // consume token after ))
+                        self.set_cmd(); // restore command context for body
+                        // Split text on ';' to get init, cond, incr
+                        let parts = split_arith_for(&text);
+                        let init = parts.0;
+                        let cond = parts.1;
+                        let incr = parts.2;
+                        // Skip optional separator before 'do'
+                        self.skip_optional_sep();
+                        self.expect_keyword("do")?;
+                        let body =
+                            self.parse_list(|t| t.kind == TokenKind::Word && t.text == "done")?;
+                        self.skip_optional_sep();
+                        self.expect_keyword("done")?;
+                        return Ok(CommandKind::CStyleFor(CStyleForCommand {
+                            init,
+                            cond,
+                            incr,
+                            body,
+                            span: Span::new(start, self.current.span.start),
+                        }));
                     }
+                    depth -= 1;
                 }
                 TokenKind::Eof => {
                     self.errors.push(ParseError::incomplete(
