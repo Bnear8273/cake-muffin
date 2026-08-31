@@ -1483,7 +1483,11 @@ impl Executor {
     fn apply_fds_in_parent<T>(&mut self, fds: &CommandFds, f: impl FnOnce(&mut Self) -> T) -> T {
         let p = cake_platform::get();
         let mut saved: Vec<(Fd, Fd)> = Vec::new();
-        for (slot, cfg) in [(0i32, &fds.stdin), (1, &fds.stdout), (2, &fds.stderr)] {
+        for (slot, cfg) in [
+            (0 as Fd, &fds.stdin),
+            (1 as Fd, &fds.stdout),
+            (2 as Fd, &fds.stderr),
+        ] {
             match cfg {
                 ChildFd::Fd(fd) => {
                     if let Ok(s) = p.dup(slot) {
