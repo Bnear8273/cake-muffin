@@ -128,4 +128,4 @@ implemented. Known gaps on the roadmap:
 
 ## License
 
-Apache-2.0
+MIT
