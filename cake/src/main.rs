@@ -6,14 +6,13 @@
 
 use cake_env::{EnvStack, EnvVar, EnvVarFlags};
 use cake_exec::Executor;
-use cake_platform::init as platform_init;
 use cake_platform_unix::unix_backend;
 
 mod repl;
 
 fn main() {
     // 1. Install the platform backend (must happen before any shell work).
-    platform_init(unix_backend());
+    cake_platform::init(unix_backend());
 
     // 2. Parse args.
     let args: Vec<String> = std::env::args().skip(1).collect();

@@ -5,6 +5,3 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 description = "Job/process data model for cake-shell (no_std)"
-
-[dependencies]
-cake-platform = { path = "../cake-platform" }

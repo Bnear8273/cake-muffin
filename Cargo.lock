@@ -88,9 +88,6 @@ dependencies = [
 [[package]]
 name = "cake-proc"
 version = "0.1.0"
-dependencies = [
- "cake-platform",
-]
 
 [[package]]
 name = "cake-reader"
