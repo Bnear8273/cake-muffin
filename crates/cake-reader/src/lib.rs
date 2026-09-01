@@ -2,7 +2,7 @@
 //!
 //! Currently provides context-aware autosuggestion: given the line being typed
 //! and the command history, propose a suffix for the rest of the line.
-//! Line-editing itself lives in the std driver (rustyline).
+//! Line-editing itself lives in the std driver (`cake-editor`).
 
 #![no_std]
 

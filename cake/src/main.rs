@@ -8,6 +8,8 @@ use cake_env::{EnvStack, EnvVar, EnvVarFlags};
 use cake_exec::Executor;
 use cake_platform_unix::unix_backend;
 
+mod prompt;
+mod readline;
 mod repl;
 
 fn main() {

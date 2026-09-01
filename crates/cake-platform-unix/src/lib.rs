@@ -503,6 +503,25 @@ impl Platform for UnixPlatform {
             .unwrap_or(0)
     }
 
+    fn time_nanos(&self) -> u64 {
+        static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+        let start = *START.get_or_init(std::time::Instant::now);
+        start.elapsed().as_nanos() as u64
+    }
+
+    fn local_time_hms(&self) -> (u8, u8, u8) {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as libc::time_t)
+            .unwrap_or(0);
+        // SAFETY: localtime_r is reentrant and writes into our zeroed tm.
+        let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+        unsafe {
+            libc::localtime_r(&now, &mut tm);
+        }
+        (tm.tm_hour as u8, tm.tm_min as u8, tm.tm_sec as u8)
+    }
+
     fn parent_pid(&self) -> i32 {
         unsafe { libc::getppid() }
     }

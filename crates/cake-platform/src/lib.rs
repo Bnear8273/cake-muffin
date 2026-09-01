@@ -406,6 +406,11 @@ pub trait Platform: Sync {
     fn set_current_dir(&self, path: &str) -> Result<(), PlatformError>;
     /// Wall-clock seconds since the Unix epoch (for `$SECONDS`/`$RANDOM`).
     fn time_seconds(&self) -> i64;
+    /// Monotonic nanoseconds since an arbitrary origin (for elapsed-time
+    /// measurements like the prompt's command-execution-time segment).
+    fn time_nanos(&self) -> u64;
+    /// Local time components (hours, minutes, seconds) for the clock segment.
+    fn local_time_hms(&self) -> (u8, u8, u8);
     /// The parent process id (for `$PPID`).
     fn parent_pid(&self) -> i32;
     /// The path under which `fd` can be opened (`/dev/fd/N` on Unix).

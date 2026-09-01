@@ -1,12 +1,12 @@
 //! The interactive REPL.
 //!
 //! `cake` with no arguments enters this loop: a PS1 prompt, line editing and
-//! history via rustyline, syntax highlighting, tab completion, continuation
-//! (PS2) for incomplete input, and Ctrl-C / Ctrl-D handling. The [`Executor`]
-//! is kept across commands (via `Rc<RefCell<..>>`) so variables, functions
-//! and the working directory persist.
+//! history via the in-house line editor ([`crate::readline`]), syntax
+//! highlighting, tab completion, continuation (PS2) for incomplete input, and
+//! Ctrl-C / Ctrl-D handling. The [`Executor`] is kept across commands (via
+//! `Rc<RefCell<..>>`) so variables, functions and the working directory
+//! persist.
 
-use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::BTreeSet;
 use std::io::{BufRead, IsTerminal};
@@ -15,97 +15,18 @@ use std::rc::Rc;
 
 use cake_blacklist::CommandBlacklist;
 use cake_complete::CompleteKind;
+use cake_editor::Candidate;
+use cake_editor::Editor as LineEditor;
+use cake_editor::{Key, KeyParser};
 use cake_exec::Executor;
 use cake_platform::XdgKind;
-use rustyline::completion::{Completer, Pair};
-use rustyline::error::ReadlineError;
-use rustyline::highlight::Highlighter;
-use rustyline::hint::Hinter;
-use rustyline::validate::Validator;
-use rustyline::{CompletionType, Config, EditMode, Editor, Helper};
 
 use crate::import_env;
-
-/// rustyline helper: syntax highlighting, tab completion and context-aware
-/// autosuggestion.
-struct CakeHelper {
-    exec: Rc<RefCell<Executor>>,
-    history: Rc<RefCell<Vec<String>>>,
-}
-
-impl Highlighter for CakeHelper {
-    fn highlight<'l>(&self, line: &'l str, _pos: usize) -> Cow<'l, str> {
-        let exec = self.exec.borrow();
-        let found = |name: &str| {
-            exec.aliases.contains_key(name)
-                || !matches!(
-                    cake_exec::resolve::resolve_command(&exec, name),
-                    cake_exec::resolve::CommandSpec::NotFound
-                )
-        };
-        Cow::Owned(cake_highlight::highlight_line(line, &found))
-    }
-    fn highlight_char(
-        &self,
-        _line: &str,
-        _pos: usize,
-        _kind: rustyline::highlight::CmdKind,
-    ) -> bool {
-        true
-    }
-    fn highlight_hint<'h>(&self, hint: &'h str) -> Cow<'h, str> {
-        // Render autosuggestions dim.
-        Cow::Owned(format!("\x1b[2m{hint}\x1b[0m"))
-    }
-}
-
-impl Completer for CakeHelper {
-    type Candidate = Pair;
-    fn complete(
-        &self,
-        line: &str,
-        pos: usize,
-        _ctx: &rustyline::Context<'_>,
-    ) -> rustyline::Result<(usize, Vec<Self::Candidate>)> {
-        let exec = self.exec.borrow();
-        Ok(complete_in(&exec, line, pos))
-    }
-}
-
-impl Hinter for CakeHelper {
-    type Hint = String;
-    fn hint(&self, line: &str, pos: usize, _ctx: &rustyline::Context<'_>) -> Option<String> {
-        if pos != line.len() {
-            return None;
-        }
-        let exec = self.exec.borrow();
-        let h = self.history.borrow();
-        // Skip history entries whose leading command is known-bad.
-        let filtered: Vec<String> = h
-            .iter()
-            .filter(|entry| {
-                let first = entry.split_whitespace().next().unwrap_or("");
-                !exec.blacklist.contains(first)
-            })
-            .cloned()
-            .collect();
-        cake_reader::suggest(line, &filtered)
-    }
-}
-
-impl Validator for CakeHelper {
-    fn validate(
-        &self,
-        _ctx: &mut rustyline::validate::ValidationContext,
-    ) -> rustyline::Result<rustyline::validate::ValidationResult> {
-        Ok(rustyline::validate::ValidationResult::Valid(None))
-    }
-}
-
-impl Helper for CakeHelper {}
+use crate::prompt::{build_prompt, prompt_enabled};
+use crate::readline::{ReadOutcome, read_loop};
 
 /// Build completion candidates for the word under the cursor.
-fn complete_in(exec: &Executor, line: &str, pos: usize) -> (usize, Vec<Pair>) {
+fn complete_in(exec: &Executor, line: &str, pos: usize) -> (usize, Vec<Candidate>) {
     let (word_start, word) = cake_complete::current_word(line, pos);
     let kind = cake_complete::classify(line, pos);
 
@@ -148,7 +69,7 @@ fn complete_in(exec: &Executor, line: &str, pos: usize) -> (usize, Vec<Pair>) {
             let matches = dedup(cake_complete::filter_candidates(word, &cands));
             let pairs = matches
                 .into_iter()
-                .map(|c| Pair {
+                .map(|c| Candidate {
                     display: c.clone(),
                     replacement: format!("{c} "),
                 })
@@ -183,7 +104,7 @@ fn complete_in(exec: &Executor, line: &str, pos: usize) -> (usize, Vec<Pair>) {
             let matches = dedup(cake_complete::filter_candidates(base, &cands));
             let pairs = matches
                 .into_iter()
-                .map(|c| Pair {
+                .map(|c| Candidate {
                     display: c.clone(),
                     replacement: format!("{dir_prefix}{c}"),
                 })
@@ -197,7 +118,7 @@ fn complete_in(exec: &Executor, line: &str, pos: usize) -> (usize, Vec<Pair>) {
             let matches = dedup(cake_complete::filter_candidates(prefix, &names));
             let pairs = matches
                 .into_iter()
-                .map(|c| Pair {
+                .map(|c| Candidate {
                     display: format!("${c}"),
                     replacement: c,
                 })
@@ -218,6 +139,52 @@ fn dedup(v: Vec<String>) -> Vec<String> {
         }
     }
     out
+}
+
+/// Run one line-edit session for `prompt` (PS1 or PS2), wiring the editor to
+/// the executor for highlighting, autosuggestion and completion. `parser` and
+/// `pending` persist across sessions so batched input (pasted lines) is not
+/// lost.
+#[allow(clippy::type_complexity)]
+fn edit_line(
+    editor: &mut LineEditor,
+    parser: &mut KeyParser,
+    pending: &mut Vec<Key>,
+    executor: &Rc<RefCell<Executor>>,
+    prompt: &str,
+    right: &str,
+) -> Result<ReadOutcome, String> {
+    let highlight = |s: &str| {
+        let exec = executor.borrow();
+        let found = |name: &str| {
+            exec.aliases.contains_key(name)
+                || !matches!(
+                    cake_exec::resolve::resolve_command(&exec, name),
+                    cake_exec::resolve::CommandSpec::NotFound
+                )
+        };
+        cake_highlight::highlight_line(s, &found)
+    };
+    let hint = |line: &str, hist: &[String]| {
+        let exec = executor.borrow();
+        // Skip history entries whose leading command is known-bad.
+        let filtered: Vec<String> = hist
+            .iter()
+            .filter(|entry| {
+                let first = entry.split_whitespace().next().unwrap_or("");
+                !exec.blacklist.contains(first)
+            })
+            .cloned()
+            .collect();
+        cake_reader::suggest(line, &filtered)
+    };
+    let complete = |line: &str, pos: usize| -> Option<(usize, Vec<Candidate>)> {
+        let exec = executor.borrow();
+        Some(complete_in(&exec, line, pos))
+    };
+    read_loop(
+        editor, parser, pending, prompt, right, &highlight, &hint, &complete,
+    )
 }
 
 /// Run the interactive loop. Never returns.
@@ -242,55 +209,39 @@ pub fn run_interactive() -> ! {
         run_piped(&mut exec);
     }
 
-    let helper = CakeHelper {
-        exec: executor.clone(),
-        history: Rc::new(RefCell::new(Vec::new())),
-    };
-    let helper_hist = helper.history.clone();
-    let mut editor = match Editor::<CakeHelper, rustyline::history::DefaultHistory>::with_config(
-        Config::builder()
-            .edit_mode(EditMode::Emacs)
-            .completion_type(CompletionType::List)
-            .build(),
-    ) {
-        Ok(mut e) => {
-            e.set_helper(Some(helper));
-            e
-        }
-        Err(e) => {
-            eprintln!("cake: failed to init line editor: {e}");
-            std::process::exit(1);
-        }
-    };
-    if let Some(path) = history_path() {
-        let _ = editor.load_history(&path);
+    let mut editor = LineEditor::new();
+    if let Ok(text) = std::fs::read_to_string(history_path()) {
+        let entries = text.lines().map(|l| l.to_string()).collect::<Vec<String>>();
+        editor.history_mut().set_entries(entries);
     }
-    // Seed the suggestion history from the persisted history so that
-    // autosuggestions work across sessions.
-    {
-        let mut h = helper_hist.borrow_mut();
-        for entry in editor.history().iter() {
-            h.push(entry.clone());
-        }
-    }
+    let mut parser = KeyParser::new();
+    let mut pending: Vec<Key> = Vec::new();
 
     let mut buffer = String::new();
+    let mut last_elapsed_ms: Option<u64> = None;
     loop {
         buffer.clear();
-        let mut prompt = {
+        let (mut prompt, mut right) = {
             let exec = executor.borrow();
-            prompt1(&exec)
+            compute_prompt(&exec, last_elapsed_ms)
         };
         loop {
-            match editor.readline(&prompt) {
-                Ok(line) => {
-                    editor.add_history_entry(line.as_str()).ok();
+            match edit_line(
+                &mut editor,
+                &mut parser,
+                &mut pending,
+                &executor,
+                &prompt,
+                &right,
+            ) {
+                Ok(ReadOutcome::Line(line)) => {
                     buffer.push_str(&line);
                     buffer.push('\n');
                 }
-                Err(ReadlineError::Eof) => {
+                Ok(ReadOutcome::Eof) => {
                     if buffer.is_empty() {
                         println!();
+                        save_history(&editor);
                         let mut exec = executor.borrow_mut();
                         exec.run_exit_traps();
                         save_blacklist(&exec);
@@ -298,19 +249,19 @@ pub fn run_interactive() -> ! {
                     }
                     // Ctrl-D during a continuation discards the input.
                     buffer.clear();
-                    prompt = {
+                    (prompt, right) = {
                         let exec = executor.borrow();
-                        prompt1(&exec)
+                        compute_prompt(&exec, last_elapsed_ms)
                     };
                     continue;
                 }
-                Err(ReadlineError::Interrupted) => {
+                Ok(ReadOutcome::Interrupted) => {
                     // Ctrl-C: cancel the current line(s), start over.
                     println!();
                     buffer.clear();
-                    prompt = {
+                    (prompt, right) = {
                         let exec = executor.borrow();
-                        prompt1(&exec)
+                        compute_prompt(&exec, last_elapsed_ms)
                     };
                     continue;
                 }
@@ -325,12 +276,15 @@ pub fn run_interactive() -> ! {
                     // Record the executed line for autosuggestion.
                     let trimmed = buffer.trim().to_string();
                     if !trimmed.is_empty() {
-                        helper_hist.borrow_mut().push(trimmed);
+                        editor.history_mut().push(trimmed);
                     }
+                    let start = cake_platform::get().time_nanos();
                     let outcome = {
                         let mut exec = executor.borrow_mut();
                         exec.eval_str(&buffer)
                     };
+                    last_elapsed_ms =
+                        Some(cake_platform::get().time_nanos().saturating_sub(start) / 1_000_000);
                     if let Some(err) = outcome.error {
                         eprintln!("{err}");
                     }
@@ -339,7 +293,7 @@ pub fn run_interactive() -> ! {
                         exec.take_exit_requested()
                     };
                     if let Some(code) = code {
-                        save_history(&mut editor);
+                        save_history(&editor);
                         let mut exec = executor.borrow_mut();
                         exec.run_exit_traps();
                         save_blacklist(&exec);
@@ -390,6 +344,16 @@ fn ps(exec: &Executor, name: &str, default: &str) -> String {
         .unwrap_or_else(|| default.to_owned())
 }
 
+/// Choose between the segmented p10k-style prompt and the legacy PS1 prompt.
+/// Returns `(prompt, right_prompt)`; the legacy path has an empty right side.
+fn compute_prompt(exec: &Executor, last_elapsed_ms: Option<u64>) -> (String, String) {
+    if prompt_enabled(exec) {
+        build_prompt(exec, last_elapsed_ms)
+    } else {
+        (prompt1(exec), String::new())
+    }
+}
+
 /// The primary prompt: an explicit `PS1` wins, otherwise the current path
 /// (abbreviated to `~` under `$HOME`), falling back to `$ ` without `PWD`.
 fn prompt1(exec: &Executor) -> String {
@@ -421,17 +385,17 @@ fn data_dir() -> PathBuf {
     PathBuf::from(cake_platform::get().xdg_dir(XdgKind::Data)).join("cake")
 }
 
-fn history_path() -> Option<PathBuf> {
-    Some(data_dir().join("history"))
+fn history_path() -> PathBuf {
+    data_dir().join("history")
 }
 
-fn save_history(editor: &mut Editor<CakeHelper, rustyline::history::DefaultHistory>) {
-    if let Some(path) = history_path() {
-        if let Some(dir) = path.parent() {
-            let _ = std::fs::create_dir_all(dir);
-        }
-        let _ = editor.save_history(&path);
+fn save_history(editor: &LineEditor) {
+    let path = history_path();
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
     }
+    let text = editor.history().entries().join("\n");
+    let _ = std::fs::write(path, text);
 }
 
 pub(crate) fn load_blacklist(exec: &mut Executor) {

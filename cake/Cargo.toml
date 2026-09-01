@@ -12,11 +12,12 @@ path = "src/main.rs"
 [dependencies]
 cake-blacklist = { path = "../crates/cake-blacklist" }
 cake-complete = { path = "../crates/cake-complete" }
+cake-editor = { path = "../crates/cake-editor" }
 cake-env = { path = "../crates/cake-env" }
 cake-exec = { path = "../crates/cake-exec" }
 cake-highlight = { path = "../crates/cake-highlight" }
 cake-platform = { path = "../crates/cake-platform" }
 cake-platform-unix = { path = "../crates/cake-platform-unix" }
+cake-prompt = { path = "../crates/cake-prompt" }
 cake-reader = { path = "../crates/cake-reader" }
 cake-syntax = { path = "../crates/cake-syntax" }
-rustyline = "16"

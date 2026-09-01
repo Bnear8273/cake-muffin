@@ -252,6 +252,14 @@ impl Platform for MockPlatform {
         1_000_000
     }
 
+    fn time_nanos(&self) -> u64 {
+        1_000_000_000
+    }
+
+    fn local_time_hms(&self) -> (u8, u8, u8) {
+        (17, 51, 22)
+    }
+
     fn parent_pid(&self) -> i32 {
         1
     }

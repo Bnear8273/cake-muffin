@@ -4,6 +4,7 @@ members = [
     "crates/cake-blacklist",
     "crates/cake-builtin",
     "crates/cake-complete",
+    "crates/cake-editor",
     "crates/cake-env",
     "crates/cake-exec",
     "crates/cake-highlight",
@@ -11,6 +12,7 @@ members = [
     "crates/cake-platform-mock",
     "crates/cake-platform-unix",
     "crates/cake-proc",
+    "crates/cake-prompt",
     "crates/cake-reader",
     "crates/cake-syntax",
 ]
@@ -28,3 +30,5 @@ nix = { version = "0.31", features = ["process", "signal", "fs", "term", "poll",
 cake-platform = { path = "crates/cake-platform" }
 cake-platform-unix = { path = "crates/cake-platform-unix" }
 cake-platform-mock = { path = "crates/cake-platform-mock" }
+cake-editor = { path = "crates/cake-editor" }
+cake-prompt = { path = "crates/cake-prompt" }
