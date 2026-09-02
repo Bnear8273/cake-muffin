@@ -79,7 +79,7 @@ pub fn truncate_to_cols(s: &str, max_cols: usize) -> String {
 /// Truncate `s` (which may contain ANSI CSI sequences) to at most `max_cols`
 /// visible columns. Escape sequences are copied verbatim regardless of the
 /// budget, so colour state stays consistent up to the cut point.
-fn truncate_ansi_to_cols(s: &str, max_cols: usize) -> String {
+pub fn truncate_ansi_to_cols(s: &str, max_cols: usize) -> String {
     if max_cols == 0 {
         return String::new();
     }

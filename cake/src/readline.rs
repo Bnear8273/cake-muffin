@@ -105,9 +105,12 @@ pub(crate) fn read_loop<'a>(
                 EditEvent::NoChange => {}
                 EditEvent::Submit(line) => {
                     // p10k transient prompt: collapse the just-submitted
-                    // two-row prompt into a single `❯ <command>` line.
+                    // two-row prompt into a single `> <command>` line. The
+                    // command keeps its syntax highlight (green for a found
+                    // command) exactly as it appeared while editing.
                     let mut out = Vec::with_capacity(64);
-                    transient_collapse(&mut out, &line, prev_rows, cols);
+                    let hl = (srv.highlight)(&line);
+                    transient_collapse(&mut out, &hl, prev_rows, cols);
                     let platform = cake_platform::get();
                     let _ = platform.write(1, &out).map_err(|e| format!("cake: {e}"))?;
                     return Ok(ReadOutcome::Line(line));
@@ -197,16 +200,18 @@ fn paint(r: &Render, cols: usize, prev_rows: usize) -> Result<usize, String> {
     Ok(r.prompt_rows)
 }
 
-/// Collapse the just-submitted two-row prompt into a single `❯ <line>`
+/// Collapse the just-submitted two-row prompt into a single `> <line>`
 /// (p10k transient prompt), so executed lines don't leave two rows behind.
-/// Single-row (legacy) prompts are left untouched: just a newline.
+/// `line` is already syntax-highlighted (ANSI). Single-row (legacy) prompts
+/// are left untouched: just a newline.
 fn transient_collapse(out: &mut Vec<u8>, line: &str, prev_rows: usize, cols: usize) {
     if prev_rows == 2 {
         // Up to the info line, erase both prompt rows (+ any completion list),
-        // then draw `❯ <command>`.
+        // then draw `> <command>`.
         out.extend_from_slice(b"\r\x1b[1A\x1b[J");
-        out.extend_from_slice("\x1b[38;5;240m\u{276f}\x1b[0m ".as_bytes()); // "❯ "
-        let t = cake_editor::render::truncate_to_cols(line, cols.saturating_sub(2));
+        // Transient prompt symbol in the same frame colour as `╰─`.
+        out.extend_from_slice(b"\x1b[38;5;240m> \x1b[0m");
+        let t = cake_editor::render::truncate_ansi_to_cols(line, cols.saturating_sub(2));
         out.extend_from_slice(t.as_bytes());
     }
     out.extend_from_slice(b"\r\n");
