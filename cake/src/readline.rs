@@ -104,7 +104,12 @@ pub(crate) fn read_loop<'a>(
                 EditEvent::Redraw => repaint = true,
                 EditEvent::NoChange => {}
                 EditEvent::Submit(line) => {
-                    write_out("\r\n")?;
+                    // p10k transient prompt: collapse the just-submitted
+                    // two-row prompt into a single `❯ <command>` line.
+                    let mut out = Vec::with_capacity(64);
+                    transient_collapse(&mut out, &line, prev_rows, cols);
+                    let platform = cake_platform::get();
+                    let _ = platform.write(1, &out).map_err(|e| format!("cake: {e}"))?;
                     return Ok(ReadOutcome::Line(line));
                 }
                 EditEvent::Eof => {
@@ -190,6 +195,21 @@ fn paint(r: &Render, cols: usize, prev_rows: usize) -> Result<usize, String> {
     let platform = cake_platform::get();
     let _ = platform.write(1, &out).map_err(|e| format!("cake: {e}"))?;
     Ok(r.prompt_rows)
+}
+
+/// Collapse the just-submitted two-row prompt into a single `❯ <line>`
+/// (p10k transient prompt), so executed lines don't leave two rows behind.
+/// Single-row (legacy) prompts are left untouched: just a newline.
+fn transient_collapse(out: &mut Vec<u8>, line: &str, prev_rows: usize, cols: usize) {
+    if prev_rows == 2 {
+        // Up to the info line, erase both prompt rows (+ any completion list),
+        // then draw `❯ <command>`.
+        out.extend_from_slice(b"\r\x1b[1A\x1b[J");
+        out.extend_from_slice("\x1b[38;5;240m\u{276f}\x1b[0m ".as_bytes()); // "❯ "
+        let t = cake_editor::render::truncate_to_cols(line, cols.saturating_sub(2));
+        out.extend_from_slice(t.as_bytes());
+    }
+    out.extend_from_slice(b"\r\n");
 }
 
 fn write_out(s: &str) -> Result<(), String> {
