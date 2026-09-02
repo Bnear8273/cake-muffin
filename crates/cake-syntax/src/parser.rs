@@ -205,7 +205,7 @@ impl<'a> Parser<'a> {
             }
             _ => {
                 self.errors.push(ParseError::new(
-                    alloc::format!("expected `;`, `&`, or newline, got `{}`", self.current.text),
+                    alloc::format!("expected `;`, `&`, or newline, got `{}`", display_token(&self.current.text)),
                     self.current.span,
                 ));
                 return Err(());
@@ -1052,7 +1052,7 @@ impl<'a> Parser<'a> {
             TokenKind::AmpGreatGreat => RedirectKind::AndAppend,
             _ => {
                 self.errors.push(ParseError::new(
-                    alloc::format!("expected redirection operator, got `{}`", self.current.text),
+                    alloc::format!("expected redirection operator, got `{}`", display_token(&self.current.text)),
                     self.current.span,
                 ));
                 return Err(());
@@ -1117,7 +1117,7 @@ impl<'a> Parser<'a> {
             }
             _ => {
                 self.errors.push(ParseError::new(
-                    alloc::format!("expected redirection target, got `{}`", self.current.text),
+                    alloc::format!("expected redirection target, got `{}`", display_token(&self.current.text)),
                     self.current.span,
                 ));
                 return Err(());
@@ -1141,7 +1141,7 @@ impl<'a> Parser<'a> {
             }
             _ => {
                 self.errors.push(ParseError::new(
-                    alloc::format!("expected redirection target, got `{}`", self.current.text),
+                    alloc::format!("expected redirection target, got `{}`", display_token(&self.current.text)),
                     self.current.span,
                 ));
                 Err(())
@@ -1180,7 +1180,7 @@ impl<'a> Parser<'a> {
             Err(())
         } else {
             self.errors.push(ParseError::new(
-                alloc::format!("expected `{kw}`, got `{}`", self.current.text),
+                alloc::format!("expected `{kw}`, got `{}`", display_token(&self.current.text)),
                 self.current.span,
             ));
             Err(())
@@ -1209,7 +1209,7 @@ impl<'a> Parser<'a> {
             Err(())
         } else {
             self.errors.push(ParseError::new(
-                alloc::format!("expected a word, got `{}`", self.current.text),
+                alloc::format!("expected a word, got `{}`", display_token(&self.current.text)),
                 self.current.span,
             ));
             Err(())
@@ -1238,6 +1238,21 @@ fn unquote_heredoc_delimiter(text: &str) -> String {
     } else {
         text.to_owned()
     }
+}
+
+/// Render a token's text for an error message, escaping control characters so
+/// a raw newline/tab doesn't break the terminal line.
+fn display_token(text: &str) -> String {
+    let mut out = String::new();
+    for c in text.chars() {
+        match c {
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            _ => out.push(c),
+        }
+    }
+    out
 }
 
 /// Split the body of `(( expr1; expr2; expr3 ))` into (init, cond, incr).

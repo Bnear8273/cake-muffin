@@ -345,6 +345,17 @@ fn unbalanced_quote() {
 }
 
 #[test]
+fn redirection_newline_error_is_escaped() {
+    // `timeout 60 >` followed by a newline: the offending token is a raw
+    // newline, which must be escaped (as `\n`) in the message, not embedded
+    // as a real line break.
+    let errs = parse_err("timeout 60 >\n");
+    let msg = &errs[0].message;
+    assert!(msg.contains("got `\\n`"), "message {msg:?} should show escaped \\n");
+    assert!(!msg.contains('\n'), "message must not embed a raw newline");
+}
+
+#[test]
 fn error_has_span() {
     let errs = parse_err("if true; echo hi; fi");
     assert!(errs[0].span.start > 0, "span should point into the source");
