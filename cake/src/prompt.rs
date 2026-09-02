@@ -42,6 +42,10 @@ pub fn build_prompt(exec: &Executor, elapsed_ms: Option<u64>) -> (String, String
     let dir_str = shorten_dir(&cake_platform::get().current_dir(), home_str.as_deref());
     let git = capture_git_status();
     let exit = exec.last_status.status_code();
+    let signal = match &exec.last_status {
+        cake_proc::ProcStatus::Signal(n) => Some(cake_platform::get().signal_name(*n)),
+        _ => None,
+    };
     let clock = {
         let (h, m, s) = cake_platform::get().local_time_hms();
         Some(format!("{h:02}:{m:02}:{s:02}"))
@@ -51,6 +55,7 @@ pub fn build_prompt(exec: &Executor, elapsed_ms: Option<u64>) -> (String, String
         dir: &dir_str,
         git,
         exit,
+        signal,
         elapsed_ms,
         clock: clock.as_deref(),
     };

@@ -148,6 +148,21 @@ impl Platform for MockPlatform {
         }
     }
 
+    fn signal_name(&self, n: i32) -> &'static str {
+        match n {
+            2 => "INT",
+            3 => "QUIT",
+            10 => "USR1",
+            12 => "USR2",
+            15 => "TERM",
+            17 => "CHLD",
+            18 => "CONT",
+            20 => "TSTP",
+            28 => "WINCH",
+            _ => "???",
+        }
+    }
+
     fn block_signals(&self, _sigs: &[Signal]) -> Result<SignalMask, PlatformError> {
         Err(PlatformError::Unsupported)
     }

@@ -20,6 +20,7 @@ dependencies = [
  "cake-highlight",
  "cake-platform",
  "cake-platform-unix",
+ "cake-proc",
  "cake-prompt",
  "cake-reader",
  "cake-syntax",

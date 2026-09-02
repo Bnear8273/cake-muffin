@@ -33,6 +33,9 @@ pub struct Facts<'a> {
     pub git: Option<GitStatus>,
     /// The exit status of the last command (`last_status.status_code()`).
     pub exit: i32,
+    /// Short name of the signal that killed the last command (e.g. `"INT"`),
+    /// or `None` if it exited normally.
+    pub signal: Option<&'a str>,
     /// Elapsed wall time of the last command (ms); `None` on the first prompt.
     pub elapsed_ms: Option<u64>,
     /// Local clock string (`HH:MM:SS`), or `None` if unavailable.
@@ -152,6 +155,8 @@ fn segment(facts: &Facts, cfg: &Config, seg: Segment) -> Option<(String, Color)>
         Segment::Status => {
             let (text, c) = if facts.exit == 0 {
                 ("\u{2713}".to_owned(), cfg.color(Segment::Status)) // ✓
+            } else if let Some(sig) = facts.signal {
+                (alloc::format!("\u{2718} {sig}"), cfg.status_fail()) // ✘ INT
             } else {
                 (alloc::format!("\u{2718} {}", facts.exit), cfg.status_fail()) // ✘ N
             };
@@ -341,12 +346,14 @@ mod tests {
         exit: i32,
         ms: Option<u64>,
         clock: Option<&'a str>,
+        signal: Option<&'a str>,
     ) -> Facts<'a> {
         Facts {
             user,
             dir,
             git,
             exit,
+            signal,
             elapsed_ms: ms,
             clock,
         }
@@ -365,7 +372,7 @@ mod tests {
 
     #[test]
     fn empty_groups_render_empty() {
-        let r = render(&facts(None, "~", None, 0, None, None), &cfg(&[], &[]));
+        let r = render(&facts(None, "~", None, 0, None, None, None), &cfg(&[], &[]));
         assert!(r.left.is_empty());
         assert!(r.right.is_empty());
         assert!(r.input.is_empty());
@@ -374,7 +381,7 @@ mod tests {
     #[test]
     fn left_group_header_and_tail() {
         let c = cfg(&[Segment::User], &[]);
-        let r = render(&facts(Some("bnear"), "~", None, 0, None, None), &c);
+        let r = render(&facts(Some("bnear"), "~", None, 0, None, None, None), &c);
         assert!(r.left.starts_with("\x1b[38;5;240m\u{256d}\u{2500}\x1b[0m"));
         assert!(r.left.contains("bnear"));
         // Tail arrow in the last segment's bg (237), on default bg.
@@ -395,6 +402,7 @@ mod tests {
             0,
             None,
             None,
+            None,
         );
         let out = render(&f, &c).left;
         assert_eq!(out.matches('\u{e0bc}').count(), 2); // user→dir, dir→git
@@ -404,7 +412,7 @@ mod tests {
     #[test]
     fn right_group_start_arrow_and_reset() {
         let c = cfg(&[], &[Segment::Status]);
-        let r = render(&facts(None, "~", None, 0, None, None), &c);
+        let r = render(&facts(None, "~", None, 0, None, None, None), &c);
         // E0B2 in the first right segment's bg (234 = shared right bg).
         assert!(r.right.starts_with("\x1b[38;5;234m\u{e0b2}"));
         assert!(r.right.contains("\u{2713}")); // ✓
@@ -414,7 +422,7 @@ mod tests {
     #[test]
     fn dir_path_split_alternates_colors() {
         let c = cfg(&[Segment::Dir], &[]);
-        let f = facts(None, "~/Projects/cake-shell", None, 0, None, None);
+        let f = facts(None, "~/Projects/cake-shell", None, 0, None, None, None);
         let out = render(&f, &c).left;
         // Components joined by /, alternating fg 31/39 on bg 236.
         assert!(out.contains(
@@ -425,7 +433,7 @@ mod tests {
     #[test]
     fn absolute_path_keeps_root_slash() {
         let c = cfg(&[Segment::Dir], &[]);
-        let f = facts(None, "/usr/local/bin", None, 0, None, None);
+        let f = facts(None, "/usr/local/bin", None, 0, None, None, None);
         let out = render(&f, &c).left;
         assert!(out.contains(
             "\x1b[38;5;244m/\x1b[38;5;39;48;5;236mlocal\x1b[38;5;244m/\x1b[38;5;31;48;5;236mbin"
@@ -435,21 +443,24 @@ mod tests {
     #[test]
     fn status_success_and_failure() {
         let c = cfg(&[], &[Segment::Status]);
-        let r = render(&facts(None, "~", None, 0, None, None), &c);
+        let r = render(&facts(None, "~", None, 0, None, None, None), &c);
         assert!(r.right.contains("\x1b[38;5;46;48;5;234m \u{2713} "));
-        let r = render(&facts(None, "~", None, 127, None, None), &c);
+        let r = render(&facts(None, "~", None, 127, None, None, None), &c);
         assert!(r.right.contains("\x1b[38;5;196;48;5;52m \u{2718} 127 "));
+        // Signal-terminated: signal short name replaces the exit code.
+        let r = render(&facts(None, "~", None, 130, None, None, Some("INT")), &c);
+        assert!(r.right.contains("\x1b[38;5;196;48;5;52m \u{2718} INT "));
     }
 
     #[test]
     fn git_colored_subsegments() {
         let c = cfg(&[Segment::Git], &[]);
         // Clean: branch in green, no dirty markers.
-        let f = facts(None, "~", Some(git(Some("main"), 0, 0, 0)), 0, None, None);
+        let f = facts(None, "~", Some(git(Some("main"), 0, 0, 0)), 0, None, None, None);
         let out = render(&f, &c).left;
         assert!(out.contains("\x1b[38;5;46;48;5;234m main"));
         // Dirty: +yellow staged, !orange unstaged, ?blue untracked.
-        let f = facts(None, "~", Some(git(Some("main"), 1, 2, 3)), 0, None, None);
+        let f = facts(None, "~", Some(git(Some("main"), 1, 2, 3)), 0, None, None, None);
         let out = render(&f, &c).left;
         assert!(out.contains("\x1b[38;5;220;48;5;234m +1"));
         assert!(out.contains("\x1b[38;5;208;48;5;234m !2"));
@@ -459,10 +470,10 @@ mod tests {
     #[test]
     fn clock_segment() {
         let c = cfg(&[], &[Segment::Clock]);
-        let f = facts(None, "~", None, 0, None, Some("17:51:22"));
+        let f = facts(None, "~", None, 0, None, Some("17:51:22"), None);
         assert!(render(&f, &c).right.contains("17:51:22"));
         // No clock when unavailable.
-        let f = facts(None, "~", None, 0, None, None);
+        let f = facts(None, "~", None, 0, None, None, None);
         assert!(render(&f, &c).right.is_empty());
     }
 
@@ -470,16 +481,16 @@ mod tests {
     fn clock_disabled() {
         let mut c = cfg(&[], &[Segment::Clock]);
         c.clock_enabled = false;
-        let f = facts(None, "~", None, 0, None, Some("17:51:22"));
+        let f = facts(None, "~", None, 0, None, Some("17:51:22"), None);
         assert!(render(&f, &c).right.is_empty());
     }
 
     #[test]
     fn time_only_over_threshold() {
         let c = cfg(&[], &[Segment::Time]);
-        let f = facts(None, "~", None, 0, Some(500), None);
+        let f = facts(None, "~", None, 0, Some(500), None, None);
         assert!(render(&f, &c).right.is_empty());
-        let f = facts(None, "~", None, 0, Some(1200), None);
+        let f = facts(None, "~", None, 0, Some(1200), None, None);
         assert!(render(&f, &c).right.contains("1.2s"));
     }
 

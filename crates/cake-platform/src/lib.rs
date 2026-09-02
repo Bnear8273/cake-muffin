@@ -334,6 +334,9 @@ pub trait Platform: Sync {
     /// Map a raw signal number back to a symbolic signal; unknown numbers
     /// become [`Signal::Other`].
     fn signal_from_number(&self, n: i32) -> Signal;
+    /// The short name of a raw signal number, e.g. `"INT"` for SIGINT, or
+    /// `"???"` for unknown numbers.
+    fn signal_name(&self, n: i32) -> &'static str;
     /// Install the shell's recording handler for `sig` so that `trap` can
     /// react to it at the next evaluation boundary. The handler only records
     /// the signal number (see [`Platform::drain_received_signals`]).

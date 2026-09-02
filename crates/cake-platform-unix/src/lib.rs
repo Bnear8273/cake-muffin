@@ -198,6 +198,13 @@ impl Platform for UnixPlatform {
         }
     }
 
+    fn signal_name(&self, n: i32) -> &'static str {
+        match nix::sys::signal::Signal::try_from(n) {
+            Ok(s) => s.as_str().strip_prefix("SIG").unwrap_or("???"),
+            Err(_) => "???",
+        }
+    }
+
     fn install_trap_handler(&self, sig: Signal) -> Result<(), PlatformError> {
         self.install_signal_handler(sig, record_signal)
     }
