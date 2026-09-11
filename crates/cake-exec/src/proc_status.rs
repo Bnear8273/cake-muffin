@@ -1,5 +1,9 @@
-use alloc::string::String;
-use alloc::vec::Vec;
+//! Process exit status.
+//!
+//! The shell-level interpretation of a child's [`WaitStatus`](cake_platform::WaitStatus):
+//! exit codes pass through, signal deaths report `128 + signal`, plus two
+//! shell-internal states (`NotStarted`, `Cancelled`) for jobs that never
+//! ran or were interrupted.
 
 /// The exit status of a process.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -44,44 +48,6 @@ impl ProcStatus {
             ProcStatus::Signal(sig) => 128 + sig,
             ProcStatus::NotStarted => 0,
             ProcStatus::Cancelled => 130, // 128 + SIGINT
-        }
-    }
-}
-
-/// How a process in a job is executed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ProcessType {
-    /// An external executable.
-    External,
-    /// A builtin command (runs in the shell process).
-    Builtin,
-    /// A shell function.
-    Function,
-    /// A compound command (if/for/while/... or a block).
-    Compound,
-}
-
-/// One element of a pipeline.
-#[derive(Debug, Clone)]
-pub struct Process {
-    /// The command word and its arguments (argv[0] first).
-    pub argv: Vec<String>,
-    pub typ: ProcessType,
-    pub status: ProcStatus,
-    /// True if this process is the first element of a pipeline.
-    pub is_first_in_job: bool,
-    /// True if this process is the last element of a pipeline.
-    pub is_last_in_job: bool,
-}
-
-impl Process {
-    pub fn new(argv: Vec<String>) -> Self {
-        Self {
-            argv,
-            typ: ProcessType::External,
-            status: ProcStatus::NotStarted,
-            is_first_in_job: true,
-            is_last_in_job: true,
         }
     }
 }

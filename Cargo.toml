@@ -2,7 +2,6 @@
 members = [
     "cake",
     "crates/cake-blacklist",
-    "crates/cake-builtin",
     "crates/cake-complete",
     "crates/cake-editor",
     "crates/cake-env",
@@ -11,7 +10,6 @@ members = [
     "crates/cake-platform",
     "crates/cake-platform-mock",
     "crates/cake-platform-unix",
-    "crates/cake-proc",
     "crates/cake-prompt",
     "crates/cake-reader",
     "crates/cake-syntax",

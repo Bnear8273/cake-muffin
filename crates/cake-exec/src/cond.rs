@@ -3,7 +3,7 @@
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
-use cake_proc::ProcStatus;
+use crate::ProcStatus;
 
 use crate::executor::Executor;
 use crate::expand::{ExpandCtx, expand_plain_string};
@@ -11,6 +11,7 @@ use crate::expand::{ExpandCtx, expand_plain_string};
 pub fn eval_cond(exec: &mut Executor, text: &str) -> ProcStatus {
     let result = {
         let ctx = ExpandCtx {
+            platform: exec.platform,
             env: &mut exec.env,
             last_status: exec.last_status,
             positional: &exec.positional,
@@ -25,9 +26,6 @@ pub fn eval_cond(exec: &mut Executor, text: &str) -> ProcStatus {
             random_state: &mut exec.random_state,
             start_time: exec.start_time,
             lineno: exec.cmd_lineno,
-            parent_pid: cake_platform::try_get()
-                .map(|p| p.parent_pid())
-                .unwrap_or(0),
             proc_subst_fds: &mut exec.proc_subst,
         };
         let mut p = CondParser::new(text, ctx);
@@ -137,111 +135,22 @@ impl<'a> CondParser<'a> {
                 let word = self.expand_word()?;
                 return Ok(word.is_empty());
             }
-            Some("-e") => {
-                self.eat();
+            Some("-e") | Some("-f") | Some("-d") | Some("-r") | Some("-w") | Some("-x")
+            | Some("-s") | Some("-L") | Some("-h") | Some("-S") | Some("-b") | Some("-c")
+            | Some("-p") | Some("-u") | Some("-g") | Some("-k") | Some("-N") | Some("-O")
+            | Some("-G") => {
+                let op = self.eat().unwrap();
                 let path = self.expand_word()?;
-                return Ok(cake_platform::get().stat(&path).exists);
-            }
-            Some("-f") => {
-                self.eat();
-                let path = self.expand_word()?;
-                return Ok(cake_platform::get().stat(&path).is_file);
-            }
-            Some("-d") => {
-                self.eat();
-                let path = self.expand_word()?;
-                return Ok(cake_platform::get().stat(&path).is_dir);
-            }
-            Some("-r") => {
-                self.eat();
-                let path = self.expand_word()?;
-                return Ok(cake_platform::get().stat(&path).is_readable);
-            }
-            Some("-w") => {
-                self.eat();
-                let path = self.expand_word()?;
-                return Ok(cake_platform::get().stat(&path).is_writable);
-            }
-            Some("-x") => {
-                self.eat();
-                let path = self.expand_word()?;
-                return Ok(cake_platform::get().stat(&path).is_executable);
-            }
-            Some("-s") => {
-                self.eat();
-                let path = self.expand_word()?;
-                return Ok(cake_platform::get().stat(&path).size > 0);
-            }
-            Some("-L") => {
-                self.eat();
-                let path = self.expand_word()?;
-                return Ok(cake_platform::get().stat(&path).is_symlink);
-            }
-            Some("-h") => {
-                self.eat();
-                let path = self.expand_word()?;
-                return Ok(cake_platform::get().stat(&path).is_symlink);
-            }
-            Some("-S") => {
-                self.eat();
-                let path = self.expand_word()?;
-                return Ok(cake_platform::get().stat(&path).is_socket);
-            }
-            Some("-b") => {
-                self.eat();
-                let path = self.expand_word()?;
-                return Ok(cake_platform::get().stat(&path).is_block_device);
-            }
-            Some("-c") => {
-                self.eat();
-                let path = self.expand_word()?;
-                return Ok(cake_platform::get().stat(&path).is_char_device);
-            }
-            Some("-p") => {
-                self.eat();
-                let path = self.expand_word()?;
-                return Ok(cake_platform::get().stat(&path).is_fifo);
-            }
-            Some("-u") => {
-                self.eat();
-                let path = self.expand_word()?;
-                return Ok(cake_platform::get().stat(&path).has_suid);
-            }
-            Some("-g") => {
-                self.eat();
-                let path = self.expand_word()?;
-                return Ok(cake_platform::get().stat(&path).has_sgid);
-            }
-            Some("-k") => {
-                self.eat();
-                let path = self.expand_word()?;
-                return Ok(cake_platform::get().stat(&path).has_sticky);
-            }
-            Some("-O") => {
-                self.eat();
-                let path = self.expand_word()?;
-                let info = cake_platform::get().stat(&path);
-                let my_uid = cake_platform::get().geteuid();
-                return Ok(info.uid == my_uid);
-            }
-            Some("-G") => {
-                self.eat();
-                let path = self.expand_word()?;
-                let info = cake_platform::get().stat(&path);
-                let my_gid = cake_platform::get().getegid();
-                return Ok(info.gid == my_gid);
-            }
-            Some("-N") => {
-                self.eat();
-                let path = self.expand_word()?;
-                let info = cake_platform::get().stat(&path);
-                return Ok(info.mtime > info.atime);
+                let info = self.ctx.platform.file_info(&path);
+                let my_uid = self.ctx.platform.effective_user_id();
+                let my_gid = self.ctx.platform.effective_group_id();
+                return Ok(crate::test_ops::eval_unary_file_test(&info, &op, my_uid, my_gid));
             }
             Some("-t") => {
                 self.eat();
                 let fd_word = self.expand_word()?;
                 let fd: u32 = fd_word.trim().parse().unwrap_or(0);
-                return Ok(cake_platform::get().is_terminal_fd(fd));
+                return Ok(self.ctx.platform.is_terminal_fd(fd));
             }
             _ => {}
         }
@@ -273,26 +182,16 @@ impl<'a> CondParser<'a> {
             }
             "<" => Ok(lhs < rhs),
             ">" => Ok(lhs > rhs),
-            "-eq" => Ok(parse_num(&lhs) == parse_num(&rhs)),
-            "-ne" => Ok(parse_num(&lhs) != parse_num(&rhs)),
-            "-lt" => Ok(parse_num(&lhs) < parse_num(&rhs)),
-            "-le" => Ok(parse_num(&lhs) <= parse_num(&rhs)),
-            "-gt" => Ok(parse_num(&lhs) > parse_num(&rhs)),
-            "-ge" => Ok(parse_num(&lhs) >= parse_num(&rhs)),
-            "-nt" => {
-                let info_lhs = cake_platform::get().stat(&lhs);
-                let info_rhs = cake_platform::get().stat(&rhs);
-                Ok(info_lhs.mtime > info_rhs.mtime)
-            }
-            "-ot" => {
-                let info_lhs = cake_platform::get().stat(&lhs);
-                let info_rhs = cake_platform::get().stat(&rhs);
-                Ok(info_lhs.mtime < info_rhs.mtime)
-            }
-            "-ef" => {
-                let info_lhs = cake_platform::get().stat(&lhs);
-                let info_rhs = cake_platform::get().stat(&rhs);
-                Ok(info_lhs.dev == info_rhs.dev && info_lhs.ino == info_rhs.ino)
+            "-eq" => Ok(crate::test_ops::parse_num(&lhs) == crate::test_ops::parse_num(&rhs)),
+            "-ne" => Ok(crate::test_ops::parse_num(&lhs) != crate::test_ops::parse_num(&rhs)),
+            "-lt" => Ok(crate::test_ops::parse_num(&lhs) < crate::test_ops::parse_num(&rhs)),
+            "-le" => Ok(crate::test_ops::parse_num(&lhs) <= crate::test_ops::parse_num(&rhs)),
+            "-gt" => Ok(crate::test_ops::parse_num(&lhs) > crate::test_ops::parse_num(&rhs)),
+            "-ge" => Ok(crate::test_ops::parse_num(&lhs) >= crate::test_ops::parse_num(&rhs)),
+            "-nt" | "-ot" | "-ef" => {
+                let info_lhs = self.ctx.platform.file_info(&lhs);
+                let info_rhs = self.ctx.platform.file_info(&rhs);
+                Ok(crate::test_ops::eval_binary_file_test(&info_lhs, &info_rhs, &op).unwrap_or(false))
             }
             other => Err(alloc::format!("unknown operator `{other}`")),
         }
@@ -306,10 +205,6 @@ impl<'a> CondParser<'a> {
         // fields; as a `[[ ]]` operand that is the empty string.
         Ok(fields.into_iter().next().unwrap_or_default())
     }
-}
-
-fn parse_num(s: &str) -> i64 {
-    s.trim().parse().unwrap_or(0)
 }
 
 /// Tokenize a `[[ ... ]]` body into words and operators.
@@ -400,4 +295,94 @@ fn tokenize_cond(text: &str) -> Vec<String> {
     }
     flush!();
     tokens
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloc::boxed::Box;
+    use cake_env::EnvStack;
+    use crate::executor::Executor;
+
+    fn setup() -> (Executor<'static>, &'static cake_platform_mock::MockPlatform) {
+        let p: &'static cake_platform_mock::MockPlatform =
+            Box::leak(Box::new(cake_platform_mock::MockPlatform::new()));
+        (Executor::new(EnvStack::new(), p), p)
+    }
+
+    #[test]
+    fn cond_file_tests_use_platform() {
+        let (mut exec, p) = setup();
+        p.set_file_info(
+            "/f",
+            cake_platform::FileInfo {
+                exists: true,
+                is_file: true,
+                ..Default::default()
+            },
+        );
+        p.set_file_info(
+            "/d",
+            cake_platform::FileInfo {
+                exists: true,
+                is_dir: true,
+                ..Default::default()
+            },
+        );
+        assert_eq!(eval_cond(&mut exec, "-f /f"), ProcStatus::Exit(0));
+        assert_eq!(eval_cond(&mut exec, "-f /d"), ProcStatus::Exit(1));
+        assert_eq!(eval_cond(&mut exec, "-d /d"), ProcStatus::Exit(0));
+        assert_eq!(eval_cond(&mut exec, "-e /missing"), ProcStatus::Exit(1));
+        // `&&` / `||` / `!` compose.
+        assert_eq!(eval_cond(&mut exec, "-f /f && -d /d"), ProcStatus::Exit(0));
+        assert_eq!(
+            eval_cond(&mut exec, "! -f /missing"),
+            ProcStatus::Exit(0)
+        );
+    }
+
+    #[test]
+    fn cond_binary_file_tests() {
+        let (mut exec, p) = setup();
+        let stamp = |mtime: i64| cake_platform::FileInfo {
+            exists: true,
+            is_file: true,
+            mtime,
+            ..Default::default()
+        };
+        p.set_file_info("/new", stamp(300));
+        p.set_file_info("/old", stamp(100));
+        assert_eq!(
+            eval_cond(&mut exec, "/new -nt /old"),
+            ProcStatus::Exit(0)
+        );
+        assert_eq!(
+            eval_cond(&mut exec, "/old -nt /new"),
+            ProcStatus::Exit(1)
+        );
+        assert_eq!(
+            eval_cond(&mut exec, "/old -ot /new"),
+            ProcStatus::Exit(0)
+        );
+    }
+
+    #[test]
+    fn cond_string_and_numeric_comparisons() {
+        let (mut exec, _p) = setup();
+        assert_eq!(eval_cond(&mut exec, "a == a"), ProcStatus::Exit(0));
+        assert_eq!(eval_cond(&mut exec, "a != b"), ProcStatus::Exit(0));
+        assert_eq!(eval_cond(&mut exec, "2 -gt 1"), ProcStatus::Exit(0));
+        assert_eq!(eval_cond(&mut exec, "1 -gt 2"), ProcStatus::Exit(1));
+        // `=~` regex match.
+        assert_eq!(eval_cond(&mut exec, "foobar =~ foo.*"), ProcStatus::Exit(0));
+        assert_eq!(eval_cond(&mut exec, "foobar =~ ^bar"), ProcStatus::Exit(1));
+    }
+
+    #[test]
+    fn cond_sees_execution_environment() {
+        let (mut exec, _p) = setup();
+        // `$?` reflects the last status through the shared ExpandCtx.
+        exec.last_status = ProcStatus::Exit(3);
+        assert_eq!(eval_cond(&mut exec, "$? -eq 3"), ProcStatus::Exit(0));
+    }
 }

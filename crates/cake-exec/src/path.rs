@@ -15,8 +15,7 @@ use cake_env::EnvStack;
 ///   directory" (which bash treats as skipped in non-privileged shells);
 /// * returns `None` if nothing matched (the caller reports "command not
 ///   found").
-pub fn find_in_path(env: &EnvStack, cmd: &str) -> Option<String> {
-    let platform = cake_platform::get();
+pub fn find_in_path(platform: &dyn cake_platform::ProcessModel, env: &EnvStack, cmd: &str) -> Option<String> {
     let sep = platform.path_separator();
 
     if cmd.contains(platform.path_separator()) || cmd.contains('\\') {

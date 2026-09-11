@@ -342,23 +342,29 @@ pub fn has_glob_chars_ext(s: &str, extglob: bool) -> bool {
 /// lexicographically). Returns an empty `Vec` when nothing matches (the
 /// caller keeps the literal pattern).
 pub fn expand_glob(
+    platform: &dyn cake_platform::ProcessModel,
     pattern: &str,
     dotglob: bool,
     nocaseglob: bool,
     extglob: bool,
     globstar: bool,
 ) -> Vec<String> {
-    let p = cake_platform::get();
-    let abs = pattern.starts_with('/');
+    let p = platform;
+    let sep = p.path_separator();
+    let abs = pattern
+        .chars()
+        .next()
+        .is_some_and(|c| p.is_path_separator(c));
     let parts: Vec<&str> = pattern
-        .trim_start_matches('/')
-        .split('/')
+        .trim_start_matches(|c: char| p.is_path_separator(c))
+        .split(|c: char| p.is_path_separator(c))
         .filter(|s| !s.is_empty())
         .collect();
     if parts.is_empty() {
         return Vec::new();
     }
-    let sep = p.path_separator();
+    // Root prefix for absolute patterns (`/` on Unix, `\` on Windows).
+    let root = alloc::format!("{sep}");
     // Accumulated matched path prefixes (`""` = relative to cwd).
     let mut results: Vec<String> = vec![String::new()];
     // Tracks whether each result came from a globstar `**` expansion
@@ -378,7 +384,7 @@ pub fn expand_glob(
                 let dir = if i == 0 && !abs {
                     "."
                 } else if base.is_empty() {
-                    "/"
+                    root.as_str()
                 } else {
                     base
                 };
@@ -398,10 +404,9 @@ pub fn expand_glob(
                 // collect_recursive already builds full paths from `dir`.
                 // For relative patterns rooted at ".", strip the "./" prefix.
                 if !abs && (i == 0 && base.is_empty()) {
+                    let dot_sep = alloc::format!(".{sep}");
                     for e in entries {
-                        if let Some(stripped) =
-                            e.strip_prefix("./").or_else(|| e.strip_prefix(".\\"))
-                        {
+                        if let Some(stripped) = e.strip_prefix(dot_sep.as_str()) {
                             next.push(alloc::string::ToString::to_string(stripped));
                             next_gs.push(true);
                         } else {
@@ -424,7 +429,7 @@ pub fn expand_glob(
             let dir = if i == 0 && !abs {
                 "."
             } else if base.is_empty() {
-                "/"
+                root.as_str()
             } else {
                 base
             };
@@ -435,8 +440,8 @@ pub fn expand_glob(
                     // its filename against the current component.
                     if from_globstar[idx]
                         && i > 0
-                        && p.stat(base).exists
-                        && !p.stat(base).is_dir
+                        && p.file_info(base).exists
+                        && !p.file_info(base).is_dir
                         && base.rsplit(sep).next().is_some_and(|fname| {
                             has_glob_chars_ext(part, extglob)
                                 && glob_match_ext(part, fname, nocaseglob, extglob)
@@ -500,7 +505,7 @@ pub fn expand_glob(
 /// only directories are collected (but NOT `dir` itself).
 /// When `dotglob` is false, leading-dot names are excluded.
 fn collect_recursive(
-    p: &'static dyn cake_platform::Platform,
+    p: &dyn cake_platform::Platform,
     dir: &str,
     out: &mut Vec<String>,
     sep: char,
@@ -520,7 +525,7 @@ fn collect_recursive(
         } else {
             alloc::format!("{dir}{sep}{name}")
         };
-        let is_dir = p.stat(&full).is_dir;
+        let is_dir = p.file_info(&full).is_dir;
         if !dirs_only || is_dir {
             out.push(full.clone());
         }
@@ -574,5 +579,82 @@ mod tests {
         assert!(glob_match("[[:upper:]]", "Z"));
         assert!(!glob_match("[[:upper:]]", "z"));
         assert!(glob_match("?[[:alnum:]]", "a1"));
+    }
+
+    fn mock_dir(entries: &[&str]) -> &'static cake_platform_mock::MockPlatform {
+        use alloc::boxed::Box;
+        let p: &'static cake_platform_mock::MockPlatform =
+            Box::leak(Box::new(cake_platform_mock::MockPlatform::new()));
+        p.set_dir_entries(".", entries);
+        p
+    }
+
+    fn names(v: &[&str]) -> Vec<String> {
+        use alloc::string::ToString;
+        v.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn expand_glob_matches_mock_dir() {
+        let p = mock_dir(&["a.txt", "b.txt", "c.rs", ".hidden"]);
+        // `*` matches every non-dot entry.
+        assert_eq!(
+            expand_glob(p, "*.txt", false, false, false, false),
+            names(&["a.txt", "b.txt"])
+        );
+        // `?` matches exactly one char.
+        assert_eq!(
+            expand_glob(p, "?.txt", false, false, false, false),
+            names(&["a.txt", "b.txt"])
+        );
+        // `[...]` character class.
+        assert_eq!(
+            expand_glob(p, "[ab].txt", false, false, false, false),
+            names(&["a.txt", "b.txt"])
+        );
+        assert_eq!(
+            expand_glob(p, "[a].txt", false, false, false, false),
+            names(&["a.txt"])
+        );
+    }
+
+    #[test]
+    fn expand_glob_dotfiles_need_dot_or_dotglob() {
+        let p = mock_dir(&["a.txt", ".hidden"]);
+        // Leading-dot entries are skipped unless the pattern starts with one.
+        assert_eq!(
+            expand_glob(p, "*", false, false, false, false),
+            names(&["a.txt"])
+        );
+        assert_eq!(
+            expand_glob(p, ".*", false, false, false, false),
+            names(&[".hidden"])
+        );
+        // ... or dotglob is set.
+        let mut both = expand_glob(p, "*", true, false, false, false);
+        both.sort();
+        assert_eq!(both, names(&[".hidden", "a.txt"]));
+    }
+
+    #[test]
+    fn expand_glob_no_match_is_empty() {
+        let p = mock_dir(&["a.txt"]);
+        assert!(expand_glob(p, "*.md", false, false, false, false).is_empty());
+        // Unconfigured directories read as errors, so nothing matches.
+        let q = mock_dir(&[]);
+        assert!(expand_glob(q, "/etc/*.conf", false, false, false, false).is_empty());
+    }
+
+    #[test]
+    fn expand_glob_absolute_pattern() {
+        use alloc::boxed::Box;
+        let p: &'static cake_platform_mock::MockPlatform =
+            Box::leak(Box::new(cake_platform_mock::MockPlatform::new()));
+        p.set_dir_entries("/", &["etc", "bin"]);
+        p.set_dir_entries("/etc", &["hosts", "fstab"]);
+        assert_eq!(
+            expand_glob(p, "/etc/h*", false, false, false, false),
+            names(&["/etc/hosts"])
+        );
     }
 }

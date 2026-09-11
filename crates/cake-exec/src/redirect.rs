@@ -89,7 +89,7 @@ fn apply_redirect(ctx: &mut ExpandCtx, r: &Redirect, fds: &mut CommandFds) -> Re
         // File redirects: open in the parent, pass the fd to the child.
         (RedirectKind::Write | RedirectKind::Clobber, RedirectTarget::Word(w)) => {
             let path = expand_redirect_word(ctx, w)?;
-            let fd = cake_platform::get()
+            let fd = ctx.platform
                 .open_file(&path, FileOpenMode::Write)
                 .map_err(|e| alloc::format!("cake: {path}: {e}"))?;
             *slot_mut(fds, slot) = ChildFd::Fd(fd);
@@ -97,7 +97,7 @@ fn apply_redirect(ctx: &mut ExpandCtx, r: &Redirect, fds: &mut CommandFds) -> Re
         }
         (RedirectKind::Append, RedirectTarget::Word(w)) => {
             let path = expand_redirect_word(ctx, w)?;
-            let fd = cake_platform::get()
+            let fd = ctx.platform
                 .open_file(&path, FileOpenMode::Append)
                 .map_err(|e| alloc::format!("cake: {path}: {e}"))?;
             *slot_mut(fds, slot) = ChildFd::Fd(fd);
@@ -105,7 +105,7 @@ fn apply_redirect(ctx: &mut ExpandCtx, r: &Redirect, fds: &mut CommandFds) -> Re
         }
         (RedirectKind::Read, RedirectTarget::Word(w)) => {
             let path = expand_redirect_word(ctx, w)?;
-            let fd = cake_platform::get()
+            let fd = ctx.platform
                 .open_file(&path, FileOpenMode::Read)
                 .map_err(|e| alloc::format!("cake: {path}: {e}"))?;
             *slot_mut(fds, slot) = ChildFd::Fd(fd);
@@ -113,7 +113,7 @@ fn apply_redirect(ctx: &mut ExpandCtx, r: &Redirect, fds: &mut CommandFds) -> Re
         }
         (RedirectKind::ReadWrite, RedirectTarget::Word(w)) => {
             let path = expand_redirect_word(ctx, w)?;
-            let fd = cake_platform::get()
+            let fd = ctx.platform
                 .open_file(&path, FileOpenMode::ReadWrite)
                 .map_err(|e| alloc::format!("cake: {path}: {e}"))?;
             *slot_mut(fds, slot) = ChildFd::Fd(fd);
@@ -122,7 +122,7 @@ fn apply_redirect(ctx: &mut ExpandCtx, r: &Redirect, fds: &mut CommandFds) -> Re
         // `&>file` / `&>>file`: both stdout and stderr.
         (RedirectKind::AndOut, RedirectTarget::Word(w)) => {
             let path = expand_redirect_word(ctx, w)?;
-            let fd = cake_platform::get()
+            let fd = ctx.platform
                 .open_file(&path, FileOpenMode::Write)
                 .map_err(|e| alloc::format!("cake: {path}: {e}"))?;
             fds.stdout = ChildFd::Fd(fd);
@@ -131,7 +131,7 @@ fn apply_redirect(ctx: &mut ExpandCtx, r: &Redirect, fds: &mut CommandFds) -> Re
         }
         (RedirectKind::AndAppend, RedirectTarget::Word(w)) => {
             let path = expand_redirect_word(ctx, w)?;
-            let fd = cake_platform::get()
+            let fd = ctx.platform
                 .open_file(&path, FileOpenMode::Append)
                 .map_err(|e| alloc::format!("cake: {path}: {e}"))?;
             fds.stdout = ChildFd::Fd(fd);
@@ -152,7 +152,7 @@ fn apply_redirect(ctx: &mut ExpandCtx, r: &Redirect, fds: &mut CommandFds) -> Re
         // `<<EOF`: pipe the (already collected) body to stdin.
         (RedirectKind::Heredoc, RedirectTarget::Heredoc { body, .. }) => {
             let text = body.borrow().clone().unwrap_or_default();
-            setup_stdin_string(&mut fds.stdin, &text)?;
+            setup_stdin_string(ctx.platform, &mut fds.stdin, &text)?;
             fds.owned.push(match fds.stdin {
                 ChildFd::Fd(fd) => fd,
                 _ => unreachable!(),
@@ -163,7 +163,7 @@ fn apply_redirect(ctx: &mut ExpandCtx, r: &Redirect, fds: &mut CommandFds) -> Re
         (RedirectKind::HereString, RedirectTarget::Word(w)) => {
             let mut text = expand_redirect_word(ctx, w)?;
             text.push('\n');
-            setup_stdin_string(&mut fds.stdin, &text)?;
+            setup_stdin_string(ctx.platform, &mut fds.stdin, &text)?;
             fds.owned.push(match fds.stdin {
                 ChildFd::Fd(fd) => fd,
                 _ => unreachable!(),
@@ -178,14 +178,14 @@ fn apply_redirect(ctx: &mut ExpandCtx, r: &Redirect, fds: &mut CommandFds) -> Re
 }
 
 /// Create a pipe, write `text`, and set the read end as stdin.
-fn setup_stdin_string(stdin: &mut ChildFd, text: &str) -> Result<(), String> {
-    let (r, w) = cake_platform::get()
-        .pipe(false)
+fn setup_stdin_string(platform: &dyn cake_platform::ProcessModel, stdin: &mut ChildFd, text: &str) -> Result<(), String> {
+    let (r, w) = platform
+        .create_pipe_pair(false)
         .map_err(|e| alloc::format!("cake: pipe: {e}"))?;
     let bytes = text.as_bytes();
     let mut written = 0;
     while written < bytes.len() {
-        let n = cake_platform::get()
+        let n = platform
             .write(w, &bytes[written..])
             .map_err(|e| alloc::format!("cake: write: {e}"))?;
         if n == 0 {
@@ -194,7 +194,7 @@ fn setup_stdin_string(stdin: &mut ChildFd, text: &str) -> Result<(), String> {
         written += n;
     }
     // Close the write end: downstream reads get EOF once we do.
-    cake_platform::get()
+    platform
         .close(w)
         .map_err(|e| alloc::format!("cake: close: {e}"))?;
     *stdin = ChildFd::Fd(r);

@@ -48,7 +48,15 @@ impl core::ops::BitOrAssign for EnvVarFlags {
     }
 }
 
+/// Delimiter joining path-list variables (PATH, CDPATH, ...) when exported.
+///
+/// `:` on Unix, `;` on Windows — the `std::env::split_paths` convention.
+/// A custom OS backend with a different convention adds its own
+/// `cfg(target_os = "...")` arm here.
+#[cfg(not(windows))]
 pub const PATH_DELIMITER: char = ':';
+#[cfg(windows)]
+pub const PATH_DELIMITER: char = ';';
 
 /// The value of a shell variable.
 ///

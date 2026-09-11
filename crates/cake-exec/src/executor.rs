@@ -8,11 +8,12 @@ use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
+use core::fmt;
 
 use cake_blacklist::CommandBlacklist;
 use cake_env::{EnvStack, EnvVar};
 use cake_platform::{ChildFd, Fd, ProcessHandle, SpawnConfig, WaitOptions, WaitStatus};
-use cake_proc::ProcStatus;
+use crate::ProcStatus;
 use cake_syntax::{
     AndOrList, AndOrOp, AssignmentValue, CStyleForCommand, CaseCommand, Command, CommandKind,
     CompleteCommand, CoprocCommand, ForCommand, List, Pipeline, Program, SelectCommand, Separator,
@@ -165,8 +166,8 @@ pub struct ShoptBits {
 }
 
 /// The shell evaluator.
-#[derive(Debug)]
-pub struct Executor {
+pub struct Executor<'a> {
+    pub platform: &'a dyn cake_platform::ProcessModel,
     pub env: EnvStack,
     pub last_status: ProcStatus,
     /// Positional parameters; `positional[0]` is `$0`.
@@ -237,9 +238,46 @@ pub struct Executor {
     pub(crate) dir_stack: Vec<String>,
 }
 
-impl Executor {
-    pub fn new(env: EnvStack) -> Self {
+impl fmt::Debug for Executor<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Executor")
+            .field("platform", &"<dyn ProcessModel>")
+            .field("env", &self.env)
+            .field("last_status", &self.last_status)
+            .field("positional", &self.positional)
+            .field("functions", &self.functions.keys().collect::<Vec<_>>())
+            .field("aliases", &self.aliases)
+            .field("expand_aliases", &self.expand_aliases)
+            .field("exit_requested", &self.exit_requested)
+            .field("loop_control", &self.loop_control)
+            .field("return_requested", &self.return_requested)
+            .field("loop_depth", &self.loop_depth)
+            .field("fn_depth", &self.fn_depth)
+            .field("shell_pid", &self.shell_pid)
+            .field("background", &self.background)
+            .field("next_job_id", &self.next_job_id)
+            .field("last_bg_pid", &self.last_bg_pid)
+            .field("interactive", &self.interactive)
+            .field("random_state", &self.random_state)
+            .field("start_time", &self.start_time)
+            .field("cmd_lineno", &self.cmd_lineno)
+            .field("in_subshell", &self.in_subshell)
+            .field("errexit", &self.errexit)
+            .field("nounset", &self.nounset)
+            .field("noglob", &self.noglob)
+            .field("pipefail", &self.pipefail)
+            .field("errtrace", &self.errtrace)
+            .field("functrace", &self.functrace)
+            .field("shopt", &self.shopt)
+            .field("traps", &self.traps)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<'a> Executor<'a> {
+    pub fn new(env: EnvStack, platform: &'a dyn cake_platform::ProcessModel) -> Self {
         Self {
+            platform,
             env,
             last_status: ProcStatus::NotStarted,
             positional: alloc::vec!["cake".into()],
@@ -256,12 +294,8 @@ impl Executor {
             next_job_id: 1,
             last_bg_pid: 0,
             interactive: false,
-            random_state: cake_platform::try_get()
-                .map(|p| p.time_seconds() as u32 ^ 0x9e3779b9)
-                .unwrap_or(0x9e3779b9),
-            start_time: cake_platform::try_get()
-                .map(|p| p.time_seconds())
-                .unwrap_or(0),
+            random_state: platform.time_seconds() as u32 ^ 0x9e3779b9,
+            start_time: platform.time_seconds(),
             cmd_lineno: 1,
             proc_subst: Vec::new(),
             in_subshell: false,
@@ -303,7 +337,7 @@ impl Executor {
                 continue;
             }
             if let Ok(WaitStatus::Exited(code)) =
-                cake_platform::get().wait(&job.handle, WaitOptions::NOHANG)
+                self.platform.wait(&job.handle, WaitOptions::NOHANG)
             {
                 job.status = Some(ProcStatus::Exit(code as i32));
             }
@@ -335,7 +369,7 @@ impl Executor {
                 let status = self.eval_program(&prog, &line_starts);
                 // Process-substitution fds live for one evaluation.
                 for fd in self.proc_subst.drain(..) {
-                    let _ = cake_platform::get().close(fd);
+                    let _ = self.platform.close(fd);
                 }
                 self.last_status = status;
                 // A pending `set -e` exit is reported through the status; it
@@ -504,7 +538,7 @@ impl Executor {
     /// Execute traps registered for real signals that arrived since last
     /// check. Called at evaluation boundaries.
     pub(crate) fn run_pending_signal_traps(&mut self) {
-        for sig in cake_platform::get().drain_received_signals() {
+        for sig in self.platform.receive_pending_signals() {
             self.run_trap(TrapTrigger::Signal(sig));
         }
     }
@@ -551,27 +585,44 @@ impl Executor {
     ///
     /// # Portability
     ///
-    /// Uses [`run_in_child`] which is `fork()`-based on Unix. The raw-pointer
-    /// reborrow (`&mut *self as *mut Executor`) only works because `fork`
-    /// snapshots heap memory; a future Windows backend must instead spawn a
-    /// fresh `cake -c` process or use `CreateProcess` + IPC (see the trait
-    /// doc on [`Platform::run_in_child`]).
+    /// Uses [`fork_and_run`] which is `fork()`-based on Unix. The child
+    /// builds a fresh [`Executor`] from cloned state rather than sharing
+    /// the parent's heap via raw pointers. A future Windows backend must
+    /// spawn a fresh `cake -c` process or use `CreateProcess` + IPC (see
+    /// the trait doc on [`ProcessModel::fork_and_run`]).
     fn eval_and_or_background(&mut self, aol: &AndOrList) -> ProcStatus {
         let list = aol.clone();
         let cmd_text = self.and_or_to_text(aol);
         let job_id = self.next_job_id;
         self.next_job_id += 1;
-        let exec = &mut *self as *mut Executor;
-        let result = cake_platform::get().run_in_child(&mut move || {
-            let exec = unsafe { &mut *exec };
-            let inherited: Vec<String> = exec
+        let platform = self.platform;
+        let mut env = Some(self.env.clone());
+        let mut positional = Some(self.positional.clone());
+        let mut functions = Some(self.functions.clone());
+        let mut aliases = Some(self.aliases.clone());
+        let mut traps = Some(self.traps.clone());
+        let nounset = self.nounset;
+        let noglob = self.noglob;
+        let shopt = self.shopt;
+        let errexit = self.errexit;
+        let result = platform.fork_and_run(&mut move || {
+            let mut sub = Executor::new(env.take().unwrap_or_default(), platform);
+            sub.positional = positional.take().unwrap_or_default();
+            sub.functions = functions.take().unwrap_or_default();
+            sub.aliases = aliases.take().unwrap_or_default();
+            sub.traps = traps.take().unwrap_or_default();
+            sub.nounset = nounset;
+            sub.noglob = noglob;
+            sub.shopt = shopt;
+            sub.errexit = errexit;
+            let inherited: Vec<String> = sub
                 .traps
                 .iter()
                 .filter(|(t, _)| *t == TrapTrigger::Exit)
                 .map(|(_, c)| c.clone())
                 .collect();
-            let st = exec.eval_and_or(&list).status_code();
-            exec.run_exit_traps_except(&inherited);
+            let st = sub.eval_and_or(&list).status_code();
+            sub.run_exit_traps_except(&inherited);
             st
         });
         if let Ok(h) = result {
@@ -694,7 +745,7 @@ impl Executor {
             let next_pipe: Option<(Fd, Fd)> = if is_last {
                 None
             } else {
-                match cake_platform::get().pipe(false) {
+                match self.platform.create_pipe_pair(false) {
                     Ok(p) => Some(p),
                     Err(e) => {
                         self.report_error(&alloc::format!("cake: pipe: {e}"));
@@ -737,14 +788,14 @@ impl Executor {
 
             // The child holds dup2 copies; close the parent's copies now.
             for fd in &fds.owned {
-                let _ = cake_platform::get().close(*fd);
+                let _ = self.platform.close(*fd);
             }
             if let Some((_, w)) = next_pipe {
-                let _ = cake_platform::get().close(w);
+                let _ = self.platform.close(w);
             }
             // The old read end is now owned by this element's child.
             if let Some(pr) = prev_read_old {
-                let _ = cake_platform::get().close(pr);
+                let _ = self.platform.close(pr);
             }
         }
 
@@ -820,24 +871,42 @@ impl Executor {
                 // # Portability
                 //
                 // Like background jobs, subshells run in a `fork`ed child via
-                // [`Platform::run_in_child`]; the raw-pointer reborrow only
-                // works on Unix. A Windows backend must spawn a fresh process
-                // instead (see the trait doc).
+                // [`ProcessModel::fork_and_run`]; the child builds a fresh
+                // `Executor` from cloned state. A Windows backend must spawn
+                // a fresh process instead (see the trait doc).
                 let body = sub.body.clone();
                 let fds = fds.clone();
-                let exec = &mut *self;
-                let handle = cake_platform::get().run_in_child(&mut move || {
-                    let inherited: Vec<String> = exec
+                let platform = self.platform;
+                let mut env = Some(self.env.clone());
+                let mut positional = Some(self.positional.clone());
+                let mut functions = Some(self.functions.clone());
+                let mut aliases = Some(self.aliases.clone());
+                let mut traps = Some(self.traps.clone());
+                let nounset = self.nounset;
+                let noglob = self.noglob;
+                let shopt = self.shopt;
+                let errexit = self.errexit;
+                let handle = platform.fork_and_run(&mut move || {
+                    let mut child = Executor::new(env.take().unwrap_or_default(), platform);
+                    child.positional = positional.take().unwrap_or_default();
+                    child.functions = functions.take().unwrap_or_default();
+                    child.aliases = aliases.take().unwrap_or_default();
+                    child.traps = traps.take().unwrap_or_default();
+                    child.nounset = nounset;
+                    child.noglob = noglob;
+                    child.shopt = shopt;
+                    child.errexit = errexit;
+                    let inherited: Vec<String> = child
                         .traps
                         .iter()
                         .filter(|(t, _)| *t == TrapTrigger::Exit)
                         .map(|(_, c)| c.clone())
                         .collect();
-                    exec.in_subshell = true;
-                    let st = exec
+                    child.in_subshell = true;
+                    let st = child
                         .apply_fds_in_parent(&fds, |e| e.eval_list(&body))
                         .status_code();
-                    exec.run_exit_traps_except(&inherited);
+                    child.run_exit_traps_except(&inherited);
                     st
                 });
                 match handle {
@@ -1028,21 +1097,21 @@ impl Executor {
             pgroup: None,
             background: false,
         };
-        let handle = cake_platform::get()
+        let handle = self.platform
             .spawn(&cfg)
             .map_err(|e| alloc::format!("cake: {}: {e}", argv[0]))?;
         // The child holds dup2 copies; the parent can close the originals.
         for fd in &fds.owned {
-            let _ = cake_platform::get().close(*fd);
+            let _ = self.platform.close(*fd);
         }
         Ok(EvalResult::Spawned(handle))
     }
 
     pub(crate) fn wait_for(&mut self, handle: &ProcessHandle) -> ProcStatus {
-        match cake_platform::get().wait(handle, WaitOptions::NONE) {
+        match self.platform.wait(handle, WaitOptions::NONE) {
             Ok(WaitStatus::Exited(code)) => ProcStatus::Exit(code as i32),
             Ok(WaitStatus::Signaled(sig)) => {
-                ProcStatus::Signal(cake_platform::get().signal_number(sig))
+                ProcStatus::Signal(self.platform.signal_to_number(sig))
             }
             Ok(_) => ProcStatus::Exit(1),
             Err(_) => ProcStatus::Exit(127),
@@ -1275,7 +1344,7 @@ impl Executor {
         loop {
             // Print the numbered menu
             for (i, item) in words.iter().enumerate() {
-                let _ = cake_platform::get()
+                let _ = self.platform
                     .write(1, alloc::format!("{}) {}\n", i + 1, item).as_bytes());
             }
 
@@ -1285,10 +1354,10 @@ impl Executor {
                 .get("PS3")
                 .map(|v| v.value().to_owned())
                 .unwrap_or_else(|| "#? ".to_owned());
-            let _ = cake_platform::get().write(1, prompt.as_bytes());
+            let _ = self.platform.write(1, prompt.as_bytes());
 
             // Read a line from stdin
-            let line = match builtins::read_line(false) {
+            let line = match builtins::read_line(self.platform, false) {
                 Ok(l) => l,
                 Err(_) => break, // EOF → exit loop
             };
@@ -1343,15 +1412,15 @@ impl Executor {
 
     fn eval_coproc(&mut self, cc: &CoprocCommand) -> ProcStatus {
         // 1. Create two pipes
-        let p = cake_platform::get();
-        let (c2p_read, c2p_write) = match p.pipe(false) {
+        let p = self.platform;
+        let (c2p_read, c2p_write) = match p.create_pipe_pair(false) {
             Ok(p) => p,
             Err(e) => {
                 self.report_error(&alloc::format!("cake: coproc: pipe: {e}"));
                 return ProcStatus::Exit(1);
             }
         };
-        let (p2c_read, p2c_write) = match p.pipe(false) {
+        let (p2c_read, p2c_write) = match p.create_pipe_pair(false) {
             Ok(p) => p,
             Err(e) => {
                 let _ = p.close(c2p_read);
@@ -1376,23 +1445,38 @@ impl Executor {
 
         // 4. Fork the child
         let body = (*cc.body).clone();
-        let exec = &mut *self as *mut Executor;
-        let handle = p.run_in_child(&mut move || {
-            let exec = unsafe { &mut *exec };
-            let inherited: Vec<String> = exec
+        let mut env = Some(self.env.clone());
+        let mut positional = Some(self.positional.clone());
+        let mut functions = Some(self.functions.clone());
+        let mut aliases = Some(self.aliases.clone());
+        let mut traps = Some(self.traps.clone());
+        let nounset = self.nounset;
+        let noglob = self.noglob;
+        let shopt = self.shopt;
+        let errexit = self.errexit;
+        let handle = p.fork_and_run(&mut move || {
+            let mut sub = Executor::new(env.take().unwrap_or_default(), p);
+            sub.positional = positional.take().unwrap_or_default();
+            sub.functions = functions.take().unwrap_or_default();
+            sub.aliases = aliases.take().unwrap_or_default();
+            sub.traps = traps.take().unwrap_or_default();
+            sub.nounset = nounset;
+            sub.noglob = noglob;
+            sub.shopt = shopt;
+            sub.errexit = errexit;
+            let inherited: Vec<String> = sub
                 .traps
                 .iter()
                 .filter(|(t, _)| *t == TrapTrigger::Exit)
                 .map(|(_, c)| c.clone())
                 .collect();
-            exec.in_subshell = true;
+            sub.in_subshell = true;
             let mut fds = child_fds.clone();
-            let st = match exec.eval_command(&body, &mut fds) {
+            let st = match sub.eval_command(&body, &mut fds) {
                 Ok(result) => match result {
                     EvalResult::Done(s) => s.status_code(),
                     EvalResult::Spawned(h) => {
-                        // Wait for the spawned process
-                        match cake_platform::get().wait(&h, WaitOptions::NONE) {
+                        match p.wait(&h, WaitOptions::NONE) {
                             Ok(WaitStatus::Exited(code)) => code as i32,
                             _ => 127,
                         }
@@ -1400,7 +1484,7 @@ impl Executor {
                 },
                 Err(_) => 1,
             };
-            exec.run_exit_traps_except(&inherited);
+            sub.run_exit_traps_except(&inherited);
             st
         });
 
@@ -1452,6 +1536,7 @@ impl Executor {
 
     fn ctx(&mut self) -> ExpandCtx<'_> {
         ExpandCtx {
+            platform: self.platform,
             env: &mut self.env,
             last_status: self.last_status,
             positional: &self.positional,
@@ -1466,22 +1551,19 @@ impl Executor {
             random_state: &mut self.random_state,
             start_time: self.start_time,
             lineno: self.cmd_lineno,
-            parent_pid: cake_platform::try_get()
-                .map(|p| p.parent_pid())
-                .unwrap_or(0),
             proc_subst_fds: &mut self.proc_subst,
         }
     }
 
     pub(crate) fn report_error(&mut self, msg: &str) {
-        let _ = cake_platform::get().write(2, msg.as_bytes());
-        let _ = cake_platform::get().write(2, b"\n");
+        let _ = self.platform.write(2, msg.as_bytes());
+        let _ = self.platform.write(2, b"\n");
     }
 
     /// Apply `fds` in the current process (for builtins/compounds), run `f`,
     /// then restore.
     fn apply_fds_in_parent<T>(&mut self, fds: &CommandFds, f: impl FnOnce(&mut Self) -> T) -> T {
-        let p = cake_platform::get();
+        let p = self.platform;
         let mut saved: Vec<(Fd, Fd)> = Vec::new();
         for (slot, cfg) in [
             (0 as Fd, &fds.stdin),
@@ -1490,23 +1572,23 @@ impl Executor {
         ] {
             match cfg {
                 ChildFd::Fd(fd) => {
-                    if let Ok(s) = p.dup(slot) {
+                    if let Ok(s) = p.duplicate_fd(slot) {
                         saved.push((slot, s));
                     }
-                    let _ = p.dup2(*fd, slot);
+                    let _ = p.duplicate_fd_to(*fd, slot);
                 }
                 ChildFd::Close => {
-                    if let Ok(s) = p.dup(slot) {
+                    if let Ok(s) = p.duplicate_fd(slot) {
                         saved.push((slot, s));
                     }
                     let _ = p.close(slot);
                 }
                 ChildFd::File(path) => {
                     if let Ok(f) = p.open_file(path, cake_platform::FileOpenMode::Write) {
-                        if let Ok(s) = p.dup(slot) {
+                        if let Ok(s) = p.duplicate_fd(slot) {
                             saved.push((slot, s));
                         }
-                        let _ = p.dup2(f, slot);
+                        let _ = p.duplicate_fd_to(f, slot);
                         let _ = p.close(f);
                     }
                 }
@@ -1518,7 +1600,7 @@ impl Executor {
         }
         let result = f(self);
         for (slot, s) in saved {
-            let _ = p.dup2(s, slot);
+            let _ = p.duplicate_fd_to(s, slot);
             let _ = p.close(s);
         }
         result
@@ -1609,11 +1691,17 @@ fn set_indexed(exec: &mut Executor, name: &str, idx: usize, value: String) -> Re
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::boxed::Box;
     use alloc::vec;
     use cake_env::EnvStack;
 
-    fn exec_with_aliases(aliases: &[(&str, &str)]) -> Executor {
-        let mut e = Executor::new(EnvStack::new());
+    fn mock_platform() -> cake_platform_mock::MockPlatform {
+        cake_platform_mock::MockPlatform::new()
+    }
+
+    fn exec_with_aliases(aliases: &[(&str, &str)]) -> Executor<'static> {
+        let platform = Box::leak(Box::new(mock_platform()));
+        let mut e = Executor::new(EnvStack::new(), platform);
         e.expand_aliases = true;
         for (k, v) in aliases {
             e.aliases.insert((*k).to_owned(), (*v).to_owned());
@@ -1659,7 +1747,8 @@ mod tests {
 
     #[test]
     fn no_expansion_when_disabled() {
-        let mut e = Executor::new(EnvStack::new());
+        let platform = Box::leak(Box::new(mock_platform()));
+        let mut e = Executor::new(EnvStack::new(), platform);
         e.aliases.insert("ls".into(), "ls --color=auto".into());
         let argv = e.expand_aliases(vec!["ls".into()]);
         assert_eq!(argv, ["ls"]);

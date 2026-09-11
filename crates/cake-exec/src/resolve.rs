@@ -17,7 +17,7 @@ pub fn describe(exec: &Executor, name: &str) -> String {
     if exec.functions.contains_key(name) {
         return "a function".into();
     }
-    if let Some(path) = find_in_path(&exec.env, name) {
+    if let Some(path) = find_in_path(exec.platform, &exec.env, name) {
         return path;
     }
     "cake: not found".into()
@@ -40,7 +40,7 @@ pub fn resolve_command(exec: &Executor, name: &str) -> CommandSpec {
     if exec.functions.contains_key(name) {
         return CommandSpec::Function;
     }
-    match find_in_path(&exec.env, name) {
+    match find_in_path(exec.platform, &exec.env, name) {
         Some(path) => CommandSpec::External(path),
         None => CommandSpec::NotFound,
     }

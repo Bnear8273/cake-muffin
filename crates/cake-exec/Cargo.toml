@@ -9,6 +9,8 @@ rust-version.workspace = true
 cake-blacklist = { path = "../cake-blacklist" }
 cake-env = { path = "../cake-env" }
 cake-platform = { path = "../cake-platform" }
-cake-proc = { path = "../cake-proc" }
 cake-syntax = { path = "../cake-syntax" }
 regex = { version = "1", default-features = false, features = ["unicode"] }
+
+[dev-dependencies]
+cake-platform-mock = { path = "../cake-platform-mock" }

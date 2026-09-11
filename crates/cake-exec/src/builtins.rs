@@ -6,7 +6,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use cake_env::{EnvVar, EnvVarFlags};
-use cake_proc::ProcStatus;
+use crate::ProcStatus;
 
 use crate::executor::{Executor, TrapTrigger};
 
@@ -18,13 +18,13 @@ pub fn run_builtin(
     args: &[String],
 ) -> Option<Result<ProcStatus, String>> {
     Some(match name {
-        "echo" => echo(args),
-        "printf" => printf(args),
+        "echo" => echo(exec.platform, args),
+        "printf" => printf(exec.platform, args),
         "true" | ":" => Ok(ProcStatus::Exit(0)),
         "false" => Ok(ProcStatus::Exit(1)),
         "exit" => exit(exec, args),
         "cd" => cd(exec, args),
-        "pwd" => pwd(),
+        "pwd" => pwd(exec.platform),
         "type" => r#type(exec, args),
         "export" => export(exec, args),
         "unset" => unset(exec, args),
@@ -33,8 +33,8 @@ pub fn run_builtin(
         "command" => Ok(ProcStatus::Exit(0)),
         "alias" => alias(exec, args),
         "unalias" => unalias(exec, args),
-        "test" => test_builtin(args),
-        "[" => test_builtin(args),
+        "test" => test_builtin(exec.platform, args),
+        "[" => test_builtin(exec.platform, args),
         "break" => r#break(exec, args),
         "continue" => continue_(exec, args),
         "return" => r#return(exec, args),
@@ -59,13 +59,16 @@ pub fn run_builtin(
     })
 }
 
-fn out(s: &str) {
-    let _ = cake_platform::get().write(1, s.as_bytes());
+fn out(platform: &dyn cake_platform::ProcessModel, s: &str) {
+    let _ = platform.write(1, s.as_bytes());
 }
 
 // --- echo ---
 
-fn echo(args: &[String]) -> Result<ProcStatus, String> {
+fn echo(
+    platform: &dyn cake_platform::ProcessModel,
+    args: &[String],
+) -> Result<ProcStatus, String> {
     let mut newline = true;
     let mut escape = false;
     let mut i = 1;
@@ -131,7 +134,7 @@ fn echo(args: &[String]) -> Result<ProcStatus, String> {
     if newline {
         buf.push('\n');
     }
-    out(&buf);
+    out(platform, &buf);
     Ok(ProcStatus::Exit(0))
 }
 
@@ -177,7 +180,10 @@ fn echo_escapes(s: &str) -> String {
 
 // --- printf ---
 
-fn printf(args: &[String]) -> Result<ProcStatus, String> {
+fn printf(
+    platform: &dyn cake_platform::ProcessModel,
+    args: &[String],
+) -> Result<ProcStatus, String> {
     if args.len() < 2 {
         return Err("cake: printf: usage: printf FORMAT [ARG...]".into());
     }
@@ -258,7 +264,7 @@ fn printf(args: &[String]) -> Result<ProcStatus, String> {
     }
     // Any trailing literal text.
     buf.push_str(chars.as_str());
-    out(&buf);
+    out(platform, &buf);
     Ok(ProcStatus::Exit(0))
 }
 
@@ -323,7 +329,7 @@ fn exit(exec: &mut Executor, args: &[String]) -> Result<ProcStatus, String> {
 // --- cd ---
 
 fn cd(exec: &mut Executor, args: &[String]) -> Result<ProcStatus, String> {
-    let old = cake_platform::get().current_dir();
+    let old = exec.platform.current_dir();
     let target = match args.get(1) {
         None => match exec.env.get("HOME") {
             Some(v) => v.value().to_owned(),
@@ -331,14 +337,14 @@ fn cd(exec: &mut Executor, args: &[String]) -> Result<ProcStatus, String> {
         },
         Some(d) if d == "-" => match exec.env.get("OLDPWD") {
             Some(v) => {
-                out(&alloc::format!("{}\n", v.value()));
+                out(exec.platform, &alloc::format!("{}\n", v.value()));
                 v.value().to_owned()
             }
             None => return Err("cake: cd: OLDPWD not set".into()),
         },
         Some(d) => d.clone(),
     };
-    cake_platform::get()
+    exec.platform
         .set_current_dir(&target)
         .map_err(|e| alloc::format!("cake: cd: {target}: {e}"))?;
     exec.env
@@ -347,7 +353,7 @@ fn cd(exec: &mut Executor, args: &[String]) -> Result<ProcStatus, String> {
     exec.env
         .set(
             "PWD",
-            EnvVar::new(cake_platform::get().current_dir()).set_flags(EnvVarFlags::EXPORT),
+            EnvVar::new(exec.platform.current_dir()).set_flags(EnvVarFlags::EXPORT),
         )
         .ok();
     Ok(ProcStatus::Exit(0))
@@ -355,8 +361,8 @@ fn cd(exec: &mut Executor, args: &[String]) -> Result<ProcStatus, String> {
 
 // --- pwd ---
 
-fn pwd() -> Result<ProcStatus, String> {
-    out(&alloc::format!("{}\n", cake_platform::get().current_dir()));
+fn pwd(platform: &dyn cake_platform::ProcessModel) -> Result<ProcStatus, String> {
+    out(platform, &alloc::format!("{}\n", platform.current_dir()));
     Ok(ProcStatus::Exit(0))
 }
 
@@ -393,7 +399,7 @@ fn alias(exec: &mut Executor, args: &[String]) -> Result<ProcStatus, String> {
     }
     if i >= args.len() {
         for (name, value) in &exec.aliases {
-            print_alias(name, value);
+            print_alias(exec.platform, name, value);
         }
         return Ok(ProcStatus::Exit(0));
     }
@@ -405,7 +411,7 @@ fn alias(exec: &mut Executor, args: &[String]) -> Result<ProcStatus, String> {
                 exec.aliases.insert(name.to_owned(), value.to_owned());
             }
             None => match exec.aliases.get(arg) {
-                Some(value) => print_alias(arg, value),
+                Some(value) => print_alias(exec.platform, arg, value),
                 None => return Err(alloc::format!("cake: alias: {arg}: not found")),
             },
         }
@@ -427,8 +433,11 @@ fn unalias(exec: &mut Executor, args: &[String]) -> Result<ProcStatus, String> {
     Ok(ProcStatus::Exit(0))
 }
 
-fn print_alias(name: &str, value: &str) {
-    out(&alloc::format!("alias {name}='{}'\n", quote_single(value)));
+fn print_alias(platform: &dyn cake_platform::ProcessModel, name: &str, value: &str) {
+    out(
+        platform,
+        &alloc::format!("alias {name}='{}'\n", quote_single(value)),
+    );
 }
 
 /// Quote `s` for a single-quoted shell word (escaping `'` as `'\''`).
@@ -448,7 +457,7 @@ fn quote_single(s: &str) -> String {
 
 /// `test EXPR` and `[ EXPR ]`. The arguments arrive already word-split and
 /// expanded by the shell.
-fn test_builtin(args: &[String]) -> Result<ProcStatus, String> {
+fn test_builtin(platform: &dyn cake_platform::ProcessModel, args: &[String]) -> Result<ProcStatus, String> {
     let is_bracket = args.first().map(String::as_str) == Some("[");
     let mut expr = &args[1..];
     if is_bracket {
@@ -458,10 +467,9 @@ fn test_builtin(args: &[String]) -> Result<ProcStatus, String> {
         expr = &expr[..expr.len() - 1];
     }
     if expr.is_empty() {
-        // Bare `test` / `[ ]` with no expression is false.
         return Ok(ProcStatus::Exit(1));
     }
-    let val = eval_test_expr(expr)?;
+    let val = eval_test_expr(platform, expr)?;
     Ok(ProcStatus::Exit(if val { 0 } else { 1 }))
 }
 
@@ -469,8 +477,8 @@ fn test_builtin(args: &[String]) -> Result<ProcStatus, String> {
 ///
 /// Grammar: `expr := and (-o and)* ; and := not (-a not)* ; not := '!' not |
 /// primary ; primary := unary-op arg | arg binop arg | arg`.
-fn eval_test_expr(args: &[String]) -> Result<bool, String> {
-    let mut p = TestParser { args, pos: 0 };
+fn eval_test_expr(platform: &dyn cake_platform::ProcessModel, args: &[String]) -> Result<bool, String> {
+    let mut p = TestParser { platform, args, pos: 0 };
     let val = p.parse_or()?;
     if p.pos != args.len() {
         return Err(alloc::format!(
@@ -482,6 +490,7 @@ fn eval_test_expr(args: &[String]) -> Result<bool, String> {
 }
 
 struct TestParser<'a> {
+    platform: &'a dyn cake_platform::ProcessModel,
     args: &'a [String],
     pos: usize,
 }
@@ -533,7 +542,7 @@ impl TestParser<'_> {
             let arg = self
                 .eat()
                 .ok_or_else(|| "cake: test: argument expected".to_string())?;
-            return unary_test(&op, &arg);
+            return unary_test(self.platform, &op, &arg);
         }
         let lhs = self
             .eat()
@@ -544,7 +553,7 @@ impl TestParser<'_> {
                 let rhs = self
                     .eat()
                     .ok_or_else(|| "cake: test: argument expected".to_string())?;
-                binary_test(&lhs, &bin, &rhs)
+                binary_test(self.platform, &lhs, &bin, &rhs)
             }
             _ => Ok(!lhs.is_empty()),
         }
@@ -597,86 +606,42 @@ fn is_binary_op(op: &str) -> bool {
     )
 }
 
-fn unary_test(op: &str, arg: &str) -> Result<bool, String> {
+fn unary_test(platform: &dyn cake_platform::ProcessModel, op: &str, arg: &str) -> Result<bool, String> {
     Ok(match op {
         "-n" => !arg.is_empty(),
         "-z" => arg.is_empty(),
         "-t" => {
             let fd: u32 = arg.trim().parse().unwrap_or(0);
-            cake_platform::get().is_terminal_fd(fd)
-        }
-        "-O" => {
-            let info = cake_platform::get().stat(arg);
-            let my_uid = cake_platform::get().geteuid();
-            info.uid == my_uid
-        }
-        "-G" => {
-            let info = cake_platform::get().stat(arg);
-            let my_gid = cake_platform::get().getegid();
-            info.gid == my_gid
+            platform.is_terminal_fd(fd)
         }
         _ => {
-            let p = cake_platform::get();
-            match op {
-                "-e" => p.stat(arg).exists,
-                "-f" => p.stat(arg).is_file,
-                "-d" => p.stat(arg).is_dir,
-                "-r" => p.stat(arg).is_readable,
-                "-w" => p.stat(arg).is_writable,
-                "-x" => p.stat(arg).is_executable,
-                "-s" => p.stat(arg).size > 0,
-                "-L" => p.stat(arg).is_symlink,
-                "-h" => p.stat(arg).is_symlink,
-                "-S" => p.stat(arg).is_socket,
-                "-b" => p.stat(arg).is_block_device,
-                "-c" => p.stat(arg).is_char_device,
-                "-p" => p.stat(arg).is_fifo,
-                "-u" => p.stat(arg).has_suid,
-                "-g" => p.stat(arg).has_sgid,
-                "-k" => p.stat(arg).has_sticky,
-                "-N" => {
-                    let info = p.stat(arg);
-                    info.mtime > info.atime
-                }
-                _ => false,
-            }
+            let info = platform.file_info(arg);
+            let my_uid = platform.effective_user_id();
+            let my_gid = platform.effective_group_id();
+            crate::test_ops::eval_unary_file_test(&info, op, my_uid, my_gid)
         }
     })
 }
 
-fn binary_test(lhs: &str, op: &str, rhs: &str) -> Result<bool, String> {
+fn binary_test(platform: &dyn cake_platform::ProcessModel, lhs: &str, op: &str, rhs: &str) -> Result<bool, String> {
     Ok(match op {
         "=" | "==" => lhs == rhs,
         "!=" => lhs != rhs,
-        "-eq" => parse_num(lhs) == parse_num(rhs),
-        "-ne" => parse_num(lhs) != parse_num(rhs),
-        "-lt" => parse_num(lhs) < parse_num(rhs),
-        "-le" => parse_num(lhs) <= parse_num(rhs),
-        "-gt" => parse_num(lhs) > parse_num(rhs),
-        "-ge" => parse_num(lhs) >= parse_num(rhs),
+        "-eq" => crate::test_ops::parse_num(lhs) == crate::test_ops::parse_num(rhs),
+        "-ne" => crate::test_ops::parse_num(lhs) != crate::test_ops::parse_num(rhs),
+        "-lt" => crate::test_ops::parse_num(lhs) < crate::test_ops::parse_num(rhs),
+        "-le" => crate::test_ops::parse_num(lhs) <= crate::test_ops::parse_num(rhs),
+        "-gt" => crate::test_ops::parse_num(lhs) > crate::test_ops::parse_num(rhs),
+        "-ge" => crate::test_ops::parse_num(lhs) >= crate::test_ops::parse_num(rhs),
         "<" => lhs < rhs,
         ">" => lhs > rhs,
-        "-nt" => {
-            let info_lhs = cake_platform::get().stat(lhs);
-            let info_rhs = cake_platform::get().stat(rhs);
-            info_lhs.mtime > info_rhs.mtime
-        }
-        "-ot" => {
-            let info_lhs = cake_platform::get().stat(lhs);
-            let info_rhs = cake_platform::get().stat(rhs);
-            info_lhs.mtime < info_rhs.mtime
-        }
-        "-ef" => {
-            let info_lhs = cake_platform::get().stat(lhs);
-            let info_rhs = cake_platform::get().stat(rhs);
-            info_lhs.dev == info_rhs.dev && info_lhs.ino == info_rhs.ino
+        "-nt" | "-ot" | "-ef" => {
+            let info_lhs = platform.file_info(lhs);
+            let info_rhs = platform.file_info(rhs);
+            crate::test_ops::eval_binary_file_test(&info_lhs, &info_rhs, op).unwrap_or(false)
         }
         _ => false,
     })
-}
-
-fn parse_num(s: &str) -> i64 {
-    s.trim().parse().unwrap_or(0)
 }
 
 // --- break / continue / return ---
@@ -734,7 +699,7 @@ fn source(exec: &mut Executor, args: &[String]) -> Result<ProcStatus, String> {
     let Some(path) = args.get(1) else {
         return Err("cake: source: filename argument required".into());
     };
-    let content = read_file(path).map_err(|e| alloc::format!("cake: source: {path}: {e}"))?;
+    let content = read_file(exec.platform, path).map_err(|e| alloc::format!("cake: source: {path}: {e}"))?;
     // The sourced file sees args as positional (`$1`, ...); `return` works.
     let saved_positional = core::mem::replace(
         &mut exec.positional,
@@ -754,21 +719,20 @@ fn source(exec: &mut Executor, args: &[String]) -> Result<ProcStatus, String> {
 }
 
 /// Read an entire file into a string via the platform fd layer.
-pub(crate) fn read_file(path: &str) -> Result<String, String> {
-    let p = cake_platform::get();
-    let fd = p
+pub(crate) fn read_file(platform: &dyn cake_platform::ProcessModel, path: &str) -> Result<String, String> {
+    let fd = platform
         .open_file(path, cake_platform::FileOpenMode::Read)
         .map_err(|e| alloc::format!("{e}"))?;
     let mut out = Vec::new();
     let mut buf = [0u8; 4096];
     loop {
-        match p.read(fd, &mut buf) {
+        match platform.read(fd, &mut buf) {
             Ok(0) => break,
             Ok(n) => out.extend_from_slice(&buf[..n]),
             Err(_) => break,
         }
     }
-    let _ = p.close(fd);
+    let _ = platform.close(fd);
     Ok(String::from_utf8_lossy(&out).into_owned())
 }
 
@@ -787,7 +751,7 @@ fn read(exec: &mut Executor, args: &[String]) -> Result<ProcStatus, String> {
     if vars.is_empty() {
         return Err("cake: read: usage: read [-r] var...".into());
     }
-    let line = read_line(raw)?;
+    let line = read_line(exec.platform, raw)?;
     let ifs: Vec<char> = match exec.env.get("IFS") {
         Some(v) => v.value().chars().collect(),
         None => {
@@ -811,13 +775,12 @@ fn read(exec: &mut Executor, args: &[String]) -> Result<ProcStatus, String> {
 }
 
 /// Read one line (up to `\n`, excluded) from fd 0.
-pub(crate) fn read_line(raw: bool) -> Result<String, String> {
-    let p = cake_platform::get();
+pub(crate) fn read_line(platform: &dyn cake_platform::ProcessModel, raw: bool) -> Result<String, String> {
     let mut out = String::new();
     let mut buf = [0u8; 1];
     let mut escaped = false;
     loop {
-        match p.read(0, &mut buf) {
+        match platform.read(0, &mut buf) {
             Ok(0) => break,
             Ok(_) => {
                 let b = buf[0];
@@ -847,7 +810,7 @@ fn r#type(exec: &Executor, args: &[String]) -> Result<ProcStatus, String> {
     let mut all_ok = true;
     for name in &args[1..] {
         let kind = crate::resolve::describe(exec, name);
-        out(&alloc::format!("{name} is {kind}\n"));
+        out(exec.platform, &alloc::format!("{name} is {kind}\n"));
         if kind.starts_with("cake:") {
             all_ok = false;
         }
@@ -861,7 +824,10 @@ fn export(exec: &mut Executor, args: &[String]) -> Result<ProcStatus, String> {
     if args.len() == 1 {
         // `export` with no args prints all exported vars.
         for (name, var) in exec.env.get_names_exported() {
-            out(&alloc::format!("export {name}=\"{}\"\n", var.value()));
+            out(
+                exec.platform,
+                &alloc::format!("export {name}=\"{}\"\n", var.value()),
+            );
         }
         return Ok(ProcStatus::Exit(0));
     }
@@ -1015,7 +981,7 @@ fn local(exec: &mut Executor, args: &[String]) -> Result<ProcStatus, String> {
                 ));
             }
         }
-        out(&buf);
+        out(exec.platform, &buf);
         return Ok(ProcStatus::Exit(0));
     }
     for arg in &args[i..] {
@@ -1077,7 +1043,7 @@ fn declare(exec: &mut Executor, args: &[String]) -> Result<ProcStatus, String> {
                 ));
             }
         }
-        out(&buf);
+        out(exec.platform, &buf);
         return Ok(ProcStatus::Exit(0));
     }
     for arg in &args[i..] {
@@ -1099,11 +1065,14 @@ fn declare(exec: &mut Executor, args: &[String]) -> Result<ProcStatus, String> {
         } else if print_decl {
             // `declare -p name`: print the declaration.
             match exec.env.get(arg) {
-                Some(var) => out(&alloc::format!(
-                    "declare -{flags_str} {arg}=\"{value}\"\n",
-                    flags_str = flag_str(var.flags()),
-                    value = var.value()
-                )),
+                Some(var) => out(
+                    exec.platform,
+                    &alloc::format!(
+                        "declare -{flags_str} {arg}=\"{value}\"\n",
+                        flags_str = flag_str(var.flags()),
+                        value = var.value()
+                    ),
+                ),
                 None => return Err(alloc::format!("declare: {arg}: not found")),
             }
         } else {
@@ -1138,10 +1107,9 @@ fn flag_str(flags: EnvVarFlags) -> String {
 
 /// `pushd [dir]` — push current directory onto the stack, then cd to dir.
 fn pushd(exec: &mut Executor, args: &[String]) -> Result<ProcStatus, String> {
-    let old = cake_platform::get().current_dir();
+    let old = exec.platform.current_dir();
     let target = match args.get(1) {
         None => {
-            // `pushd` with no args: swap top two stack entries.
             if exec.dir_stack.is_empty() {
                 return Err("pushd: no other directory in stack".into());
             }
@@ -1150,7 +1118,6 @@ fn pushd(exec: &mut Executor, args: &[String]) -> Result<ProcStatus, String> {
             top
         }
         Some(d) if d == "-n" => {
-            // `pushd -n`: just manipulate the stack, don't cd.
             if let Some(top) = exec.dir_stack.pop() {
                 exec.dir_stack.push(old.clone());
                 exec.dir_stack.push(top);
@@ -1159,7 +1126,7 @@ fn pushd(exec: &mut Executor, args: &[String]) -> Result<ProcStatus, String> {
         }
         Some(d) => d.clone(),
     };
-    cake_platform::get()
+    exec.platform
         .set_current_dir(&target)
         .map_err(|e| alloc::format!("pushd: {target}: {e}"))?;
     exec.dir_stack.push(old.clone());
@@ -1169,10 +1136,13 @@ fn pushd(exec: &mut Executor, args: &[String]) -> Result<ProcStatus, String> {
     exec.env
         .set(
             "PWD",
-            EnvVar::new(cake_platform::get().current_dir()).set_flags(EnvVarFlags::EXPORT),
+            EnvVar::new(exec.platform.current_dir()).set_flags(EnvVarFlags::EXPORT),
         )
         .ok();
-    out(&alloc::format!("{}\n", cake_platform::get().current_dir()));
+    out(
+        exec.platform,
+        &alloc::format!("{}\n", exec.platform.current_dir()),
+    );
     Ok(ProcStatus::Exit(0))
 }
 
@@ -1194,7 +1164,7 @@ fn popd(exec: &mut Executor, args: &[String]) -> Result<ProcStatus, String> {
         // popd +0 is a no-op (top of stack).
     }
     let target = exec.dir_stack.pop().ok_or("popd: directory stack empty")?;
-    cake_platform::get()
+    exec.platform
         .set_current_dir(&target)
         .map_err(|e| alloc::format!("popd: {target}: {e}"))?;
     exec.env
@@ -1203,11 +1173,14 @@ fn popd(exec: &mut Executor, args: &[String]) -> Result<ProcStatus, String> {
     exec.env
         .set(
             "PWD",
-            EnvVar::new(cake_platform::get().current_dir()).set_flags(EnvVarFlags::EXPORT),
+            EnvVar::new(exec.platform.current_dir()).set_flags(EnvVarFlags::EXPORT),
         )
         .ok();
     if print {
-        out(&alloc::format!("{}\n", cake_platform::get().current_dir()));
+        out(
+            exec.platform,
+            &alloc::format!("{}\n", exec.platform.current_dir()),
+        );
     }
     Ok(ProcStatus::Exit(0))
 }
@@ -1215,13 +1188,13 @@ fn popd(exec: &mut Executor, args: &[String]) -> Result<ProcStatus, String> {
 /// `dirs` — print the directory stack.
 fn dirs(exec: &Executor) -> Result<ProcStatus, String> {
     let mut buf = String::new();
-    buf.push_str(&cake_platform::get().current_dir());
+    buf.push_str(&exec.platform.current_dir());
     for d in exec.dir_stack.iter().rev() {
         buf.push(' ');
         buf.push_str(d);
     }
     buf.push('\n');
-    out(&buf);
+    out(exec.platform, &buf);
     Ok(ProcStatus::Exit(0))
 }
 
@@ -1384,7 +1357,7 @@ fn jobs(exec: &mut Executor, args: &[String]) -> Result<ProcStatus, String> {
         line.push('\n');
         buf.push_str(&line);
     }
-    out(&buf);
+    out(exec.platform, &buf);
     // Done jobs are shown once, then dropped (bash behaviour).
     exec.background.retain(|j| j.status.is_none());
     Ok(ProcStatus::Exit(0))
@@ -1461,7 +1434,7 @@ fn set_(exec: &mut Executor, args: &[String]) -> Result<ProcStatus, String> {
             line.push('=');
             line.push_str(exec.env.get(n).map(|v| v.value()).unwrap_or(""));
             line.push('\n');
-            out(&line);
+            out(exec.platform, &line);
         }
         return Ok(ProcStatus::Exit(0));
     }
@@ -1549,7 +1522,7 @@ fn list_set_options(exec: &Executor) {
             if on { "on" } else { "off" }
         ));
     }
-    out(&buf);
+    out(exec.platform, &buf);
 }
 
 // --- shopt ---
@@ -1622,7 +1595,7 @@ fn shopt(exec: &mut Executor, args: &[String]) -> Result<ProcStatus, String> {
             ));
         }
     }
-    out(&buf);
+    out(exec.platform, &buf);
     Ok(ProcStatus::Exit(0))
 }
 
@@ -1671,7 +1644,7 @@ fn trap(exec: &mut Executor, args: &[String]) -> Result<ProcStatus, String> {
                 trigger_name(*trigger)
             ));
         }
-        out(&buf);
+        out(exec.platform, &buf);
         return Ok(ProcStatus::Exit(0));
     }
     let action = args[i].clone();
@@ -1695,7 +1668,7 @@ fn trap(exec: &mut Executor, args: &[String]) -> Result<ProcStatus, String> {
                 // Record the signal so the trap can fire at the next
                 // evaluation boundary. (`trap -` leaves the recording
                 // handler installed; the signal is then just ignored.)
-                let _ = cake_platform::get().install_trap_handler(sig);
+                let _ = exec.platform.install_trap_handler(sig);
             }
         }
         any = true;
@@ -1712,27 +1685,27 @@ fn parse_trigger(name: &str) -> Option<TrapTrigger> {
         "EXIT" | "0" => return Some(TrapTrigger::Exit),
         "ERR" => return Some(TrapTrigger::Err),
         "DEBUG" => return Some(TrapTrigger::Debug),
-        "HUP" => Signal::Other(1),
+        "HUP" => Signal::Hangup,
         "INT" => Signal::Interrupt,
         "QUIT" => Signal::Quit,
         "TERM" => Signal::Terminate,
-        "KILL" => Signal::Other(9),
+        "KILL" => Signal::Kill,
         "USR1" => Signal::User1,
         "USR2" => Signal::User2,
-        "PIPE" => Signal::Other(13),
-        "ALRM" => Signal::Other(14),
+        "PIPE" => Signal::Pipe,
+        "ALRM" => Signal::Alarm,
         "CHLD" => Signal::Child,
         "CONT" => Signal::Continue,
-        "STOP" => Signal::Other(19),
+        "STOP" => Signal::Stop,
         "TSTP" => Signal::Tstp,
         "WINCH" => Signal::WindowChange,
-        "ILL" => Signal::Other(4),
-        "ABRT" => Signal::Other(6),
-        "BUS" => Signal::Other(7),
-        "FPE" => Signal::Other(8),
-        "SEGV" => Signal::Other(11),
-        "TTIN" => Signal::Other(21),
-        "TTOU" => Signal::Other(22),
+        "ILL" => Signal::Illegal,
+        "ABRT" => Signal::Abort,
+        "BUS" => Signal::Bus,
+        "FPE" => Signal::FloatingPoint,
+        "SEGV" => Signal::Segmentation,
+        "TTIN" => Signal::Ttin,
+        "TTOU" => Signal::Ttou,
         _ => {
             return name
                 .parse::<i32>()
@@ -1751,12 +1724,24 @@ fn trigger_name(trigger: TrapTrigger) -> alloc::string::String {
         TrapTrigger::Err => "ERR".into(),
         TrapTrigger::Debug => "DEBUG".into(),
         TrapTrigger::Signal(s) => match s {
+            Signal::Hangup => "HUP".into(),
             Signal::Interrupt => "INT".into(),
             Signal::Quit => "QUIT".into(),
+            Signal::Illegal => "ILL".into(),
+            Signal::Abort => "ABRT".into(),
+            Signal::Bus => "BUS".into(),
+            Signal::FloatingPoint => "FPE".into(),
+            Signal::Kill => "KILL".into(),
+            Signal::Segmentation => "SEGV".into(),
+            Signal::Pipe => "PIPE".into(),
+            Signal::Alarm => "ALRM".into(),
             Signal::Terminate => "TERM".into(),
             Signal::Child => "CHLD".into(),
             Signal::Continue => "CONT".into(),
+            Signal::Stop => "STOP".into(),
             Signal::Tstp => "TSTP".into(),
+            Signal::Ttin => "TTIN".into(),
+            Signal::Ttou => "TTOU".into(),
             Signal::WindowChange => "WINCH".into(),
             Signal::User1 => "USR1".into(),
             Signal::User2 => "USR2".into(),
@@ -1823,13 +1808,19 @@ pub fn builtin_names() -> &'static [&'static str] {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::boxed::Box;
     use alloc::string::ToString;
     use alloc::vec::Vec;
     use cake_env::EnvStack;
+    use cake_platform::Platform;
+
+    fn mock_platform() -> &'static cake_platform_mock::MockPlatform {
+        Box::leak(Box::new(cake_platform_mock::MockPlatform::new()))
+    }
 
     #[test]
     fn alias_defines() {
-        let mut exec = Executor::new(EnvStack::new());
+        let mut exec = Executor::new(EnvStack::new(), mock_platform());
         let r = alias(&mut exec, &["alias".into(), "ls=ls --color=auto".into()]).unwrap();
         assert_eq!(r, ProcStatus::Exit(0));
         assert_eq!(
@@ -1840,14 +1831,14 @@ mod tests {
 
     #[test]
     fn alias_query_missing_errors() {
-        let mut exec = Executor::new(EnvStack::new());
+        let mut exec = Executor::new(EnvStack::new(), mock_platform());
         let r = alias(&mut exec, &["alias".into(), "nope".into()]);
         assert!(r.is_err());
     }
 
     #[test]
     fn unalias_removes() {
-        let mut exec = Executor::new(EnvStack::new());
+        let mut exec = Executor::new(EnvStack::new(), mock_platform());
         exec.aliases.insert("ls".into(), "ls --color=auto".into());
         let r = unalias(&mut exec, &["unalias".into(), "ls".into()]).unwrap();
         assert_eq!(r, ProcStatus::Exit(0));
@@ -1856,14 +1847,14 @@ mod tests {
 
     #[test]
     fn unalias_missing_errors() {
-        let mut exec = Executor::new(EnvStack::new());
+        let mut exec = Executor::new(EnvStack::new(), mock_platform());
         let r = unalias(&mut exec, &["unalias".into(), "nope".into()]);
         assert!(r.is_err());
     }
 
     #[test]
     fn unalias_dash_a_clears_all() {
-        let mut exec = Executor::new(EnvStack::new());
+        let mut exec = Executor::new(EnvStack::new(), mock_platform());
         exec.aliases.insert("ls".into(), "ls --color=auto".into());
         exec.aliases
             .insert("grep".into(), "grep --color=auto".into());
@@ -1880,48 +1871,240 @@ mod tests {
 
     #[test]
     fn test_binary_and_unary() {
+        let p = mock_platform();
         let a = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
         // 1 = 2 → false (exit 1)
         assert_eq!(
-            test_builtin(&a(&["test", "1", "=", "2"])).unwrap(),
+            test_builtin(p, &a(&["test", "1", "=", "2"])).unwrap(),
             ProcStatus::Exit(1)
         );
         // 1 = 1 → true
         assert_eq!(
-            test_builtin(&a(&["test", "1", "=", "1"])).unwrap(),
+            test_builtin(p, &a(&["test", "1", "=", "1"])).unwrap(),
             ProcStatus::Exit(0)
         );
         // 1 != 2 → true
         assert_eq!(
-            test_builtin(&a(&["test", "1", "!=", "2"])).unwrap(),
+            test_builtin(p, &a(&["test", "1", "!=", "2"])).unwrap(),
             ProcStatus::Exit(0)
         );
         // 2 -gt 1 → true
         assert_eq!(
-            test_builtin(&a(&["test", "2", "-gt", "1"])).unwrap(),
+            test_builtin(p, &a(&["test", "2", "-gt", "1"])).unwrap(),
             ProcStatus::Exit(0)
         );
         // -n x → true
         assert_eq!(
-            test_builtin(&a(&["test", "-n", "x"])).unwrap(),
+            test_builtin(p, &a(&["test", "-n", "x"])).unwrap(),
             ProcStatus::Exit(0)
         );
         // -n "" → false
         assert_eq!(
-            test_builtin(&a(&["test", "-n", ""])).unwrap(),
+            test_builtin(p, &a(&["test", "-n", ""])).unwrap(),
             ProcStatus::Exit(1)
         );
         // ! expression
         assert_eq!(
-            test_builtin(&a(&["test", "!", "1", "=", "2"])).unwrap(),
+            test_builtin(p, &a(&["test", "!", "1", "=", "2"])).unwrap(),
             ProcStatus::Exit(0)
         );
         // [ 1 = 1 ] → true
         assert_eq!(
-            test_builtin(&a(&["[", "1", "=", "1", "]"])).unwrap(),
+            test_builtin(p, &a(&["[", "1", "=", "1", "]"])).unwrap(),
             ProcStatus::Exit(0)
         );
         // bare `test` with no args → false
-        assert_eq!(test_builtin(&a(&["test"])).unwrap(), ProcStatus::Exit(1));
+        assert_eq!(test_builtin(p, &a(&["test"])).unwrap(), ProcStatus::Exit(1));
+    }
+
+    #[test]
+    fn test_file_type_operators() {
+        let p = mock_platform();
+        let file_info = |exists: bool,
+                         is_file: bool,
+                         is_dir: bool,
+                         is_symlink: bool,
+                         is_socket: bool,
+                         is_fifo: bool| {
+            cake_platform::FileInfo {
+                exists,
+                is_file,
+                is_dir,
+                is_symlink,
+                is_socket,
+                is_fifo,
+                ..Default::default()
+            }
+        };
+        p.set_file_info("/f", file_info(true, true, false, false, false, false));
+        p.set_file_info("/d", file_info(true, false, true, false, false, false));
+        p.set_file_info("/link", file_info(true, false, false, true, false, false));
+        p.set_file_info("/sock", file_info(true, false, false, false, true, false));
+        p.set_file_info("/fifo", file_info(true, false, false, false, false, true));
+        let a = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let t = |args: &[&str]| test_builtin(p, &a(args)).unwrap();
+        // -e: existence
+        assert_eq!(t(&["test", "-e", "/f"]), ProcStatus::Exit(0));
+        assert_eq!(t(&["test", "-e", "/missing"]), ProcStatus::Exit(1));
+        // -f / -d discriminate
+        assert_eq!(t(&["test", "-f", "/f"]), ProcStatus::Exit(0));
+        assert_eq!(t(&["test", "-f", "/d"]), ProcStatus::Exit(1));
+        assert_eq!(t(&["test", "-d", "/d"]), ProcStatus::Exit(0));
+        assert_eq!(t(&["test", "-d", "/f"]), ProcStatus::Exit(1));
+        // symlink / socket / fifo
+        assert_eq!(t(&["test", "-L", "/link"]), ProcStatus::Exit(0));
+        assert_eq!(t(&["test", "-h", "/link"]), ProcStatus::Exit(0));
+        assert_eq!(t(&["test", "-L", "/f"]), ProcStatus::Exit(1));
+        assert_eq!(t(&["test", "-S", "/sock"]), ProcStatus::Exit(0));
+        assert_eq!(t(&["test", "-S", "/f"]), ProcStatus::Exit(1));
+        assert_eq!(t(&["test", "-p", "/fifo"]), ProcStatus::Exit(0));
+        assert_eq!(t(&["test", "-p", "/f"]), ProcStatus::Exit(1));
+    }
+
+    #[test]
+    fn test_file_permission_operators() {
+        let p = mock_platform();
+        p.set_file_info(
+            "/f",
+            cake_platform::FileInfo {
+                exists: true,
+                is_file: true,
+                is_readable: true,
+                is_writable: true,
+                is_executable: true,
+                size: 42,
+                uid: 0,
+                gid: 0,
+                mtime: 200,
+                atime: 100,
+                has_suid: true,
+                has_sgid: true,
+                has_sticky: true,
+                ..Default::default()
+            },
+        );
+        p.set_file_info(
+            "/other",
+            cake_platform::FileInfo {
+                exists: true,
+                is_file: true,
+                uid: 1000,
+                gid: 1000,
+                ..Default::default()
+            },
+        );
+        let a = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let t = |args: &[&str]| test_builtin(p, &a(args)).unwrap();
+        assert_eq!(t(&["test", "-r", "/f"]), ProcStatus::Exit(0));
+        assert_eq!(t(&["test", "-w", "/f"]), ProcStatus::Exit(0));
+        assert_eq!(t(&["test", "-x", "/f"]), ProcStatus::Exit(0));
+        assert_eq!(t(&["test", "-r", "/other"]), ProcStatus::Exit(1));
+        assert_eq!(t(&["test", "-s", "/f"]), ProcStatus::Exit(0));
+        assert_eq!(t(&["test", "-s", "/other"]), ProcStatus::Exit(1));
+        assert_eq!(t(&["test", "-u", "/f"]), ProcStatus::Exit(0));
+        assert_eq!(t(&["test", "-g", "/f"]), ProcStatus::Exit(0));
+        assert_eq!(t(&["test", "-k", "/f"]), ProcStatus::Exit(0));
+        assert_eq!(t(&["test", "-u", "/other"]), ProcStatus::Exit(1));
+        // -N: modified since last read (mtime > atime)
+        assert_eq!(t(&["test", "-N", "/f"]), ProcStatus::Exit(0));
+        assert_eq!(t(&["test", "-N", "/other"]), ProcStatus::Exit(1));
+        // -O / -G: owned by euid / egid (mock runs as 0:0)
+        assert_eq!(t(&["test", "-O", "/f"]), ProcStatus::Exit(0));
+        assert_eq!(t(&["test", "-O", "/other"]), ProcStatus::Exit(1));
+        assert_eq!(t(&["test", "-G", "/f"]), ProcStatus::Exit(0));
+        assert_eq!(t(&["test", "-G", "/other"]), ProcStatus::Exit(1));
+        // -t: mock has no terminal
+        assert_eq!(t(&["test", "-t", "0"]), ProcStatus::Exit(1));
+    }
+
+    #[test]
+    fn test_file_binary_operators() {
+        let p = mock_platform();
+        let stamp = |mtime: i64, dev: u64, ino: u64| cake_platform::FileInfo {
+            exists: true,
+            is_file: true,
+            mtime,
+            atime: 0,
+            dev,
+            ino,
+            ..Default::default()
+        };
+        p.set_file_info("/new", stamp(300, 1, 10));
+        p.set_file_info("/old", stamp(100, 1, 20));
+        // Same dev+ino as /new (hardlink).
+        p.set_file_info("/hardlink", stamp(300, 1, 10));
+        let a = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let t = |args: &[&str]| test_builtin(p, &a(args)).unwrap();
+        assert_eq!(t(&["test", "/new", "-nt", "/old"]), ProcStatus::Exit(0));
+        assert_eq!(t(&["test", "/old", "-nt", "/new"]), ProcStatus::Exit(1));
+        assert_eq!(t(&["test", "/old", "-ot", "/new"]), ProcStatus::Exit(0));
+        assert_eq!(t(&["test", "/new", "-ot", "/old"]), ProcStatus::Exit(1));
+        assert_eq!(t(&["test", "/new", "-ef", "/hardlink"]), ProcStatus::Exit(0));
+        assert_eq!(t(&["test", "/new", "-ef", "/old"]), ProcStatus::Exit(1));
+    }
+
+    #[test]
+    fn cd_updates_pwd_and_oldpwd() {
+        let p = mock_platform();
+        p.set_cwd("/start");
+        let mut exec = Executor::new(EnvStack::new(), p);
+        let r = cd(&mut exec, &["cd".into(), "/work".into()]).unwrap();
+        assert_eq!(r, ProcStatus::Exit(0));
+        assert_eq!(p.current_dir(), "/work");
+        assert_eq!(exec.env.get("PWD").map(|v| v.value()), Some("/work"));
+        assert_eq!(exec.env.get("OLDPWD").map(|v| v.value()), Some("/start"));
+    }
+
+    #[test]
+    fn cd_dash_returns_to_oldpwd_and_prints_it() {
+        let p = mock_platform();
+        p.set_cwd("/start");
+        let mut exec = Executor::new(EnvStack::new(), p);
+        cd(&mut exec, &["cd".into(), "/work".into()]).unwrap();
+        let r = cd(&mut exec, &["cd".into(), "-".into()]).unwrap();
+        assert_eq!(r, ProcStatus::Exit(0));
+        assert_eq!(p.current_dir(), "/start");
+        // `cd -` prints the directory it switches to.
+        assert_eq!(p.written_to(1), b"/start\n");
+    }
+
+    #[test]
+    fn cd_without_home_errors() {
+        let p = mock_platform();
+        let mut exec = Executor::new(EnvStack::new(), p);
+        let r = cd(&mut exec, &["cd".into()]);
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn pwd_writes_current_dir() {
+        let p = mock_platform();
+        p.set_cwd("/work");
+        let r = pwd(p).unwrap();
+        assert_eq!(r, ProcStatus::Exit(0));
+        assert_eq!(p.written_to(1), b"/work\n");
+    }
+
+    #[test]
+    fn signal_trigger_round_trip() {
+        // Every name parse_trigger accepts maps back to itself.
+        let names = [
+            "HUP", "INT", "QUIT", "ILL", "ABRT", "BUS", "FPE", "KILL", "SEGV", "PIPE",
+            "ALRM", "TERM", "CHLD", "CONT", "STOP", "TSTP", "TTIN", "TTOU", "WINCH",
+            "USR1", "USR2",
+        ];
+        for name in names {
+            let trigger = parse_trigger(name).expect("known signal name");
+            assert_eq!(trigger_name(trigger), name);
+        }
+        // Non-signal triggers keep their names.
+        assert_eq!(trigger_name(TrapTrigger::Exit), "EXIT");
+        assert_eq!(trigger_name(TrapTrigger::Err), "ERR");
+        assert_eq!(trigger_name(TrapTrigger::Debug), "DEBUG");
+        // Numeric input survives as Other(n).
+        let trigger = parse_trigger("9").expect("numeric signal");
+        assert_eq!(trigger_name(trigger), "9");
+        // Unknown names are rejected.
+        assert!(parse_trigger("NOTASIG").is_none());
     }
 }

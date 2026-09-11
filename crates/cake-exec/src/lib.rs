@@ -14,8 +14,11 @@ pub mod executor;
 pub mod expand;
 pub mod glob;
 pub mod path;
+pub mod proc_status;
 pub mod redirect;
 pub mod resolve;
+mod test_ops;
 
 pub use executor::{EvalOutcome, Executor};
 pub use path::find_in_path;
+pub use proc_status::ProcStatus;

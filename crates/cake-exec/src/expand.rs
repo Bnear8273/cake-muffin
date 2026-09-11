@@ -11,12 +11,13 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use cake_env::EnvStack;
-use cake_proc::ProcStatus;
+use crate::ProcStatus;
 use cake_syntax::{Command, Parameter, Word, WordPart};
 
 /// Context for expanding a word. Holds the environment mutably so that
 /// `${x:=default}` can assign back into it.
 pub struct ExpandCtx<'a> {
+    pub platform: &'a dyn cake_platform::ProcessModel,
     pub env: &'a mut EnvStack,
     pub last_status: ProcStatus,
     /// Positional parameters (`$1`, `$@`, ...).
@@ -43,8 +44,6 @@ pub struct ExpandCtx<'a> {
     pub start_time: i64,
     /// Current line number (`$LINENO`; one-per-command approximation).
     pub lineno: u32,
-    /// Parent process id (`$PPID`).
-    pub parent_pid: i32,
     /// Fds backing `<(cmd)`/`>(cmd)` process substitutions; kept open until
     /// the end of evaluation.
     pub proc_subst_fds: &'a mut Vec<cake_platform::Fd>,
@@ -52,8 +51,8 @@ pub struct ExpandCtx<'a> {
 
 impl ExpandCtx<'_> {
     pub fn report_error(&self, msg: &str) {
-        let _ = cake_platform::get().write(2, msg.as_bytes());
-        let _ = cake_platform::get().write(2, b"\n");
+        let _ = self.platform.write(2, msg.as_bytes());
+        let _ = self.platform.write(2, b"\n");
     }
 }
 
@@ -157,6 +156,7 @@ fn expand_fields(
     for (i, f) in fields.iter().enumerate() {
         if glob_ok[i] && crate::glob::has_glob_chars_ext(f, ctx.shopt.extglob) {
             let matches = crate::glob::expand_glob(
+                ctx.platform,
                 f,
                 ctx.shopt.dotglob,
                 ctx.shopt.nocaseglob,
@@ -405,9 +405,9 @@ fn expand_process_subst(ctx: &mut ExpandCtx, raw: &str) -> Result<PartOut, Strin
         Some(b'>') => (false, &raw[2..raw.len().saturating_sub(1)]),
         _ => return Err(alloc::format!("cake: bad process substitution `{raw}`")),
     };
-    let p = cake_platform::get();
+    let p = ctx.platform;
     let (r, w) = p
-        .pipe(false)
+        .create_pipe_pair(false)
         .map_err(|e| alloc::format!("cake: pipe: {e}"))?;
     let mut env = Some(ctx.env.clone());
     let mut positional = Some(ctx.positional.to_vec());
@@ -417,8 +417,8 @@ fn expand_process_subst(ctx: &mut ExpandCtx, raw: &str) -> Result<PartOut, Strin
     let noglob = ctx.noglob;
     let shopt = ctx.shopt;
     let errexit = ctx.errexit;
-    let handle = p.run_in_child(&mut move || {
-        let mut sub = crate::executor::Executor::new(env.take().unwrap_or_default());
+    let handle = p.fork_and_run(&mut move || {
+        let mut sub = crate::executor::Executor::new(env.take().unwrap_or_default(), p);
         sub.positional = positional.take().unwrap_or_default();
         sub.functions = functions.take().unwrap_or_default();
         sub.aliases = aliases.take().unwrap_or_default();
@@ -428,11 +428,11 @@ fn expand_process_subst(ctx: &mut ExpandCtx, raw: &str) -> Result<PartOut, Strin
         sub.errexit = errexit;
         if is_input {
             // `<(cmd)`: the command's stdout feeds the pipe.
-            let _ = p.dup2(w, 1);
+            let _ = p.duplicate_fd_to(w, 1);
             let _ = p.close(r);
         } else {
             // `>(cmd)`: the command reads the pipe on stdin.
-            let _ = p.dup2(r, 0);
+            let _ = p.duplicate_fd_to(r, 0);
             let _ = p.close(w);
         }
         let outcome = sub.eval_str(body);
@@ -453,7 +453,7 @@ fn expand_process_subst(ctx: &mut ExpandCtx, raw: &str) -> Result<PartOut, Strin
     // the fd (bash waits for it when the shell exits).
     let _ = p.wait(&handle, cake_platform::WaitOptions::NOHANG);
     ctx.proc_subst_fds.push(keep);
-    Ok(PartOut::Append(p.fd_path(keep)))
+    Ok(PartOut::Append(p.fd_to_path(keep)))
 }
 
 /// Evaluate `cmd` in a forked child with stdout captured, then strip all
@@ -468,7 +468,7 @@ fn expand_command_subst(
         let path_text = rest.trim_start();
         if !path_text.is_empty() {
             let path = expand_operand(ctx, path_text)?;
-            return match crate::builtins::read_file(&path) {
+            return match crate::builtins::read_file(ctx.platform, &path) {
                 Ok(content) => {
                     let trimmed = content.trim_end_matches('\n').to_owned();
                     Ok(part_value(&Some(trimmed), in_dquotes))
@@ -482,9 +482,9 @@ fn expand_command_subst(
             };
         }
     }
-    let p = cake_platform::get();
+    let p = ctx.platform;
     let (r, w) = p
-        .pipe(false)
+        .create_pipe_pair(false)
         .map_err(|e| alloc::format!("cake: pipe: {e}"))?;
     // Snapshot the state the sub-shell needs (env, positionals, functions,
     // aliases) so the child can build its own Executor without sharing ours.
@@ -496,10 +496,10 @@ fn expand_command_subst(
     let noglob = ctx.noglob;
     let shopt = ctx.shopt;
     let errexit = ctx.errexit;
-    let handle = p.run_in_child(&mut move || {
-        let _ = p.dup2(w, 1);
+    let handle = p.fork_and_run(&mut move || {
+        let _ = p.duplicate_fd_to(w, 1);
         let _ = p.close(r);
-        let mut sub = crate::executor::Executor::new(env.take().unwrap_or_default());
+        let mut sub = crate::executor::Executor::new(env.take().unwrap_or_default(), p);
         sub.positional = positional.take().unwrap_or_default();
         sub.functions = functions.take().unwrap_or_default();
         sub.aliases = aliases.take().unwrap_or_default();
@@ -604,14 +604,14 @@ fn expand_parameter(
             return Ok(PartOut::Append(v.to_string()));
         }
         "SECONDS" => {
-            let now = cake_platform::get().time_seconds();
+            let now = ctx.platform.time_seconds();
             return Ok(PartOut::Append((now - ctx.start_time).max(0).to_string()));
         }
         "LINENO" => {
             return Ok(PartOut::Append(ctx.lineno.to_string()));
         }
         "PPID" => {
-            return Ok(PartOut::Append(ctx.parent_pid.to_string()));
+            return Ok(PartOut::Append(ctx.platform.parent_pid().to_string()));
         }
         _ => {}
     }
@@ -1402,11 +1402,17 @@ pub fn word_from_string(s: &str) -> Word {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::boxed::Box;
     use cake_env::{EnvStack, EnvVar};
+
+    fn mock_platform() -> &'static cake_platform_mock::MockPlatform {
+        Box::leak(Box::new(cake_platform_mock::MockPlatform::new()))
+    }
 
     fn expand_str(env: &mut EnvStack, s: &str) -> Vec<String> {
         let word = cake_syntax::word::parse_word(s, cake_syntax::Span::new(0, s.len() as u32));
         let mut ctx = ExpandCtx {
+            platform: mock_platform(),
             env,
             last_status: ProcStatus::Exit(0),
             positional: &[],
@@ -1421,8 +1427,7 @@ mod tests {
             random_state: &mut 0,
             start_time: 0,
             lineno: 1,
-            parent_pid: 0,
-            proc_subst_fds: &mut alloc::vec::Vec::new(),
+            proc_subst_fds: &mut alloc::vec![],
         };
         expand_word(&mut ctx, &word).unwrap()
     }

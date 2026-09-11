@@ -30,7 +30,7 @@ fn main() {
         }
         ParsedArgs::Command(cmd, rest) => {
             let env = import_env();
-            let mut executor = Executor::new(env);
+            let mut executor = Executor::new(env, cake_platform::get());
             executor.shell_pid = std::process::id() as i32;
             crate::repl::load_blacklist(&mut executor);
             // Like `bash -c CMD arg...`: the first trailing arg is `$0`,

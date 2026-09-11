@@ -43,7 +43,7 @@ pub fn build_prompt(exec: &Executor, elapsed_ms: Option<u64>) -> (String, String
     let git = capture_git_status();
     let exit = exec.last_status.status_code();
     let signal = match &exec.last_status {
-        cake_proc::ProcStatus::Signal(n) => Some(cake_platform::get().signal_name(*n)),
+        cake_exec::ProcStatus::Signal(n) => Some(cake_platform::get().signal_name(*n)),
         _ => None,
     };
     let clock = {

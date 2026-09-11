@@ -25,10 +25,20 @@ use crate::import_env;
 use crate::prompt::{build_prompt, prompt_enabled};
 use crate::readline::{ReadOutcome, read_loop};
 
+/// Join a directory and an entry name with the platform separator.
+fn join_path(dir: &str, name: &str, sep: char) -> String {
+    if dir.ends_with(sep) {
+        format!("{dir}{name}")
+    } else {
+        format!("{dir}{sep}{name}")
+    }
+}
+
 /// Build completion candidates for the word under the cursor.
 fn complete_in(exec: &Executor, line: &str, pos: usize) -> (usize, Vec<Candidate>) {
     let (word_start, word) = cake_complete::current_word(line, pos);
     let kind = cake_complete::classify(line, pos);
+    let platform = exec.platform;
 
     match kind {
         CompleteKind::Command => {
@@ -42,22 +52,21 @@ fn complete_in(exec: &Executor, line: &str, pos: usize) -> (usize, Vec<Candidate
             for a in exec.aliases.keys() {
                 cands.push(a.clone());
             }
+            let sep = platform.path_separator();
             if let Some(pathvar) = exec.env.get("PATH") {
                 for dir in pathvar.values() {
-                    if let Ok(rd) = std::fs::read_dir(dir) {
-                        for e in rd.flatten() {
-                            let name = e.file_name().to_string_lossy().into_owned();
-                            if cake_platform::get().is_executable(&e.path().to_string_lossy()) {
+                    if let Ok(names) = platform.read_dir(dir) {
+                        for name in names {
+                            if platform.is_executable(&join_path(dir, &name, sep)) {
                                 cands.push(name);
                             }
                         }
                     }
                 }
             }
-            if let Ok(rd) = std::fs::read_dir(".") {
-                for e in rd.flatten() {
-                    let name = e.file_name().to_string_lossy().into_owned();
-                    if cake_platform::get().is_executable(&e.path().to_string_lossy()) {
+            if let Ok(names) = platform.read_dir(".") {
+                for name in names {
+                    if platform.is_executable(&join_path(".", &name, sep)) {
                         cands.push(name);
                     }
                 }
@@ -78,9 +87,9 @@ fn complete_in(exec: &Executor, line: &str, pos: usize) -> (usize, Vec<Candidate
         }
         CompleteKind::File => {
             // Split the word into (dir, base) around the last path separator.
-            let sep = cake_platform::get().path_separator();
+            let sep = platform.path_separator();
             let (dir, base, dir_prefix) =
-                match word.rfind(|c| cake_platform::get().is_path_separator(c)) {
+                match word.rfind(|c| platform.is_path_separator(c)) {
                     Some(0) => (sep.to_string(), &word[1..], sep.to_string()),
                     Some(i) => (
                         word[..i].to_string(),
@@ -90,11 +99,9 @@ fn complete_in(exec: &Executor, line: &str, pos: usize) -> (usize, Vec<Candidate
                     None => (String::from("."), word, String::new()),
                 };
             let mut cands: Vec<String> = Vec::new();
-            if let Ok(rd) = std::fs::read_dir(&dir) {
-                for e in rd.flatten() {
-                    let name = e.file_name().to_string_lossy().into_owned();
-                    let full = e.path().to_string_lossy().into_owned();
-                    if cake_platform::get().stat(&full).is_dir {
+            if let Ok(names) = platform.read_dir(&dir) {
+                for name in names {
+                    if platform.file_info(&join_path(&dir, &name, sep)).is_dir {
                         cands.push(format!("{name}{sep}"));
                     } else {
                         cands.push(name);
@@ -189,7 +196,7 @@ fn edit_line(
 
 /// Run the interactive loop. Never returns.
 pub fn run_interactive() -> ! {
-    let executor = Rc::new(RefCell::new(Executor::new(import_env())));
+    let executor = Rc::new(RefCell::new(Executor::new(import_env(), cake_platform::get())));
     {
         let mut exec = executor.borrow_mut();
         exec.shell_pid = std::process::id() as i32;

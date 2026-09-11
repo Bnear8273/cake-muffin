@@ -20,23 +20,47 @@ pub type Fd = usize;
 /// A signal, by symbolic name (not by platform-specific number).
 ///
 /// Shell code refers to signals symbolically; the platform backend owns the
-/// mapping to raw numbers ([`Platform::signal_number`]), because those
+/// mapping to raw numbers ([`ProcessModel::signal_to_number`]), because those
 /// numbers differ between Linux and the BSDs/macOS (e.g. `SIGUSR1` is 10 on
 /// Linux but 30 on macOS).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Signal {
+    /// `SIGHUP` — hangup (controlling terminal closed).
+    Hangup,
     /// `SIGINT` — interactive interrupt (Ctrl-C).
     Interrupt,
     /// `SIGQUIT` — keyboard quit (Ctrl-\).
     Quit,
+    /// `SIGILL` — illegal instruction.
+    Illegal,
+    /// `SIGABRT` — abort.
+    Abort,
+    /// `SIGBUS` — bus error.
+    Bus,
+    /// `SIGFPE` — floating-point exception.
+    FloatingPoint,
+    /// `SIGKILL` — kill (cannot be caught or ignored).
+    Kill,
+    /// `SIGSEGV` — invalid memory reference.
+    Segmentation,
+    /// `SIGPIPE` — broken pipe.
+    Pipe,
+    /// `SIGALRM` — timer alarm.
+    Alarm,
     /// `SIGTERM` — termination.
     Terminate,
     /// `SIGCHLD` — child stopped or terminated.
     Child,
     /// `SIGCONT` — continue a stopped process.
     Continue,
+    /// `SIGSTOP` — stop (cannot be caught or ignored).
+    Stop,
     /// `SIGTSTP` — keyboard stop (Ctrl-Z).
     Tstp,
+    /// `SIGTTIN` — background read from terminal.
+    Ttin,
+    /// `SIGTTOU` — background write to terminal.
+    Ttou,
     /// `SIGWINCH` — window size change.
     WindowChange,
     /// `SIGUSR1` — application-defined.
@@ -50,12 +74,24 @@ pub enum Signal {
 impl Signal {
     pub fn name(self) -> &'static str {
         match self {
+            Signal::Hangup => "SIGHUP",
             Signal::Interrupt => "SIGINT",
             Signal::Quit => "SIGQUIT",
+            Signal::Illegal => "SIGILL",
+            Signal::Abort => "SIGABRT",
+            Signal::Bus => "SIGBUS",
+            Signal::FloatingPoint => "SIGFPE",
+            Signal::Kill => "SIGKILL",
+            Signal::Segmentation => "SIGSEGV",
+            Signal::Pipe => "SIGPIPE",
+            Signal::Alarm => "SIGALRM",
             Signal::Terminate => "SIGTERM",
             Signal::Child => "SIGCHLD",
             Signal::Continue => "SIGCONT",
+            Signal::Stop => "SIGSTOP",
             Signal::Tstp => "SIGTSTP",
+            Signal::Ttin => "SIGTTIN",
+            Signal::Ttou => "SIGTTOU",
             Signal::WindowChange => "SIGWINCH",
             Signal::User1 => "SIGUSR1",
             Signal::User2 => "SIGUSR2",
@@ -118,15 +154,19 @@ pub struct TerminalSize {
     pub cols: u16,
 }
 
-/// Opaque terminal attributes.
-pub struct Termios {
+/// Opaque terminal state snapshot. Can be saved and restored to enter/exit
+/// raw mode for line editing.
+pub struct TerminalState {
     data: [u8; 64],
-    raw_fn: fn(&mut [u8; 64]),
+    raw_mode_fn: fn(&mut [u8; 64]),
 }
 
-impl Termios {
-    pub fn new(data: [u8; 64], raw_fn: fn(&mut [u8; 64])) -> Self {
-        Self { data, raw_fn }
+impl TerminalState {
+    pub fn new(data: [u8; 64], raw_mode_fn: fn(&mut [u8; 64])) -> Self {
+        Self {
+            data,
+            raw_mode_fn,
+        }
     }
 
     pub fn data(&self) -> &[u8; 64] {
@@ -137,15 +177,17 @@ impl Termios {
         &mut self.data
     }
 
-    /// Set the terminal to raw mode (no echo, no canonical, etc.).
+    /// Apply raw mode flags (no echo, no canonical, etc.) to the stored state.
     pub fn set_raw(&mut self) {
-        (self.raw_fn)(&mut self.data);
+        (self.raw_mode_fn)(&mut self.data);
     }
 }
 
-impl fmt::Debug for Termios {
+impl fmt::Debug for TerminalState {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Termios").finish_non_exhaustive()
+        f.debug_struct("TerminalState")
+            .field("data", &"[...]")
+            .finish_non_exhaustive()
     }
 }
 
@@ -310,64 +352,199 @@ impl fmt::Display for PlatformError {
 // Platform trait
 // ---------------------------------------------------------------------------
 
-/// Platform abstraction. Backends implement this trait; the shell drives it
-/// through the global accessor (`cake_platform::init` / `cake_platform::get`).
+/// Lowest-level OS abstraction: files, descriptors, I/O, terminal, CWD, time.
+/// Owns no process semantics — see [`ProcessModel`].
+///
+/// Backends implement this trait; the shell drives it through
+/// [`ProcessModel`] (which inherits `Platform`).
 pub trait Platform: Sync {
-    // --- Process ---
-    fn spawn(&self, cfg: &SpawnConfig) -> Result<ProcessHandle, ProcessError>;
-    fn wait(&self, handle: &ProcessHandle, opts: WaitOptions) -> Result<WaitStatus, ProcessError>;
-    fn kill(&self, handle: &ProcessHandle, sig: Signal) -> Result<(), ProcessError>;
-    fn set_terminal_foreground(&self, pgid: ProcessGroupId) -> Result<(), PlatformError>;
-    fn current_process_group(&self) -> ProcessGroupId;
-
-    // --- Signal ---
-    fn install_signal_handler(
-        &self,
-        sig: Signal,
-        handler: extern "C" fn(i32),
-    ) -> Result<(), PlatformError>;
-    /// Map a symbolic signal to the platform's raw signal number.
-    ///
-    /// Numbers are platform-specific (e.g. `SIGUSR1` is 10 on Linux but 30 on
-    /// macOS/BSD), so the backend owns the mapping.
-    fn signal_number(&self, sig: Signal) -> i32;
-    /// Map a raw signal number back to a symbolic signal; unknown numbers
-    /// become [`Signal::Other`].
-    fn signal_from_number(&self, n: i32) -> Signal;
-    /// The short name of a raw signal number, e.g. `"INT"` for SIGINT, or
-    /// `"???"` for unknown numbers.
-    fn signal_name(&self, n: i32) -> &'static str;
-    /// Install the shell's recording handler for `sig` so that `trap` can
-    /// react to it at the next evaluation boundary. The handler only records
-    /// the signal number (see [`Platform::drain_received_signals`]).
-    fn install_trap_handler(&self, sig: Signal) -> Result<(), PlatformError>;
-    /// Block the given signals, returning the previous mask so callers can
-    /// restore it with `unblock_signals`.
-    fn block_signals(&self, sigs: &[Signal]) -> Result<SignalMask, PlatformError>;
-    /// Restore a previously returned signal mask.
-    fn unblock_signals(&self, mask: &SignalMask) -> Result<(), PlatformError>;
-    /// Drain the signals received since the last call (used for `trap`).
-    /// Signals are recorded by the platform's handlers without doing any
-    /// shell work in signal context.
-    fn drain_received_signals(&self) -> Vec<Signal>;
-
     // --- Terminal ---
-    fn get_termios(&self, fd: Fd) -> Result<Termios, PlatformError>;
-    fn set_termios(&self, fd: Fd, t: &Termios) -> Result<(), PlatformError>;
-    fn terminal_size(&self, fd: Fd) -> Result<TerminalSize, PlatformError>;
+
+    /// Read the full terminal state (attributes, flags, control characters)
+    /// for saving/restoring around raw mode.
+    fn read_terminal_state(&self, _fd: Fd) -> Result<TerminalState, PlatformError> {
+        Err(PlatformError::Unsupported)
+    }
+
+    /// Write a previously saved terminal state back.
+    fn write_terminal_state(
+        &self,
+        _fd: Fd,
+        _state: &TerminalState,
+    ) -> Result<(), PlatformError> {
+        Err(PlatformError::Unsupported)
+    }
+
+    /// Terminal window size in rows and columns.
+    fn terminal_size(&self, _fd: Fd) -> Result<TerminalSize, PlatformError> {
+        Err(PlatformError::Unsupported)
+    }
 
     // --- FD ---
-    fn pipe(&self, cloexec: bool) -> Result<(Fd, Fd), PlatformError>;
+
+    /// Create a unidirectional pipe, returning (read_fd, write_fd).
+    fn create_pipe_pair(&self, cloexec: bool) -> Result<(Fd, Fd), PlatformError>;
+
+    /// Open a file by path with the given mode, returning its fd.
     fn open_file(&self, path: &str, mode: FileOpenMode) -> Result<Fd, PlatformError>;
-    fn dup(&self, fd: Fd) -> Result<Fd, PlatformError>;
-    fn dup2(&self, oldfd: Fd, newfd: Fd) -> Result<(), PlatformError>;
+
+    /// Duplicate `fd` to the lowest available number.
+    fn duplicate_fd(&self, fd: Fd) -> Result<Fd, PlatformError>;
+
+    /// Duplicate `oldfd` to `newfd`, closing `newfd` first if open.
+    fn duplicate_fd_to(&self, oldfd: Fd, newfd: Fd) -> Result<(), PlatformError>;
+
+    /// Close a file descriptor.
     fn close(&self, fd: Fd) -> Result<(), PlatformError>;
+
     /// Write up to `buf.len()` bytes; returns bytes written.
     fn write(&self, fd: Fd, buf: &[u8]) -> Result<usize, PlatformError>;
+
     /// Read into `buf`; returns bytes read (0 at EOF).
     fn read(&self, fd: Fd, buf: &mut [u8]) -> Result<usize, PlatformError>;
 
+    // --- FS ---
+
+    /// The platform's null device path (`/dev/null` on Unix, `NUL` on
+    /// Windows).
+    fn null_device(&self) -> &'static str;
+
+    /// The platform's preferred path separator (`/` on Unix, `\` on Windows).
+    fn path_separator(&self) -> char;
+
+    /// Whether `c` is accepted as a path separator. Each platform must
+    /// define this explicitly — there is no universal default.
+    fn is_path_separator(&self, c: char) -> bool;
+
+    /// Whether `path` points to an executable file.
+    fn is_executable(&self, path: &str) -> bool;
+
+    /// Filesystem facts for test operators (`[[ -e ]]`, `[[ -d ]]`, etc.).
+    fn file_info(&self, path: &str) -> FileInfo;
+
+    /// True if `fd` refers to a terminal (isatty).
+    fn is_terminal_fd(&self, fd: u32) -> bool;
+
+    /// List the entry names in `path` (glob expansion support).
+    fn read_dir(&self, path: &str) -> Result<Vec<String>, PlatformError>;
+
+    /// XDG base directory path.
+    fn xdg_dir(&self, kind: XdgKind) -> String;
+
+    // --- CWD ---
+
+    /// Current working directory.
+    fn current_dir(&self) -> String;
+
+    /// Set the current working directory.
+    fn set_current_dir(&self, path: &str) -> Result<(), PlatformError>;
+
+    // --- Time ---
+
+    /// Wall-clock seconds since the Unix epoch (for `$SECONDS`/`$RANDOM`).
+    fn time_seconds(&self) -> i64;
+
+    /// Monotonic nanoseconds since an arbitrary origin (for elapsed-time
+    /// measurements like the prompt's command-execution-time segment).
+    fn time_nanos(&self) -> u64;
+
+    /// Local time components (hours, minutes, seconds) for the clock segment.
+    fn local_time_hms(&self) -> (u8, u8, u8);
+}
+
+// ---------------------------------------------------------------------------
+// ProcessModel trait
+// ---------------------------------------------------------------------------
+
+/// Process and signal management. Inherits [`Platform`] so a single
+/// `&dyn ProcessModel` reference gives access to both OS primitives and
+/// process semantics.
+///
+/// A target without Unix primitives (e.g. no `fork`) implements
+/// `ProcessModel` with default stubs for unsupported operations
+/// (`Err(Unsupported)`).
+pub trait ProcessModel: Platform {
+    // --- Process ---
+
+    /// Spawn a child process (fork+exec on Unix, CreateProcess on Windows).
+    fn spawn(&self, cfg: &SpawnConfig) -> Result<ProcessHandle, ProcessError>;
+
+    /// Wait for a child process to change status.
+    fn wait(
+        &self,
+        handle: &ProcessHandle,
+        opts: WaitOptions,
+    ) -> Result<WaitStatus, ProcessError>;
+
+    /// Send a signal to a process.
+    fn kill(&self, handle: &ProcessHandle, sig: Signal) -> Result<(), ProcessError>;
+
+    /// Give terminal foreground to a process group. Returns
+    /// `Err(Unsupported)` on systems without job control.
+    fn set_foreground_process_group(
+        &self,
+        _pgid: ProcessGroupId,
+    ) -> Result<(), PlatformError> {
+        Err(PlatformError::Unsupported)
+    }
+
+    /// Current process group ID.
+    fn current_process_group(&self) -> ProcessGroupId;
+
+    // --- Signal ---
+
+    /// Install a C signal handler. Returns `Err(Unsupported)` on systems
+    /// without signals.
+    fn install_signal_handler(
+        &self,
+        _sig: Signal,
+        _handler: extern "C" fn(i32),
+    ) -> Result<(), PlatformError> {
+        Err(PlatformError::Unsupported)
+    }
+
+    /// Map a symbolic signal to the platform's raw signal number.
+    ///
+    /// Numbers are platform-specific (e.g. `SIGUSR1` is 10 on Linux but 30
+    /// on macOS/BSD), so the backend owns the mapping.
+    fn signal_to_number(&self, sig: Signal) -> i32;
+
+    /// Map a raw signal number back to a symbolic signal; unknown numbers
+    /// become [`Signal::Other`].
+    fn signal_from_number(&self, n: i32) -> Signal;
+
+    /// The short name of a raw signal number, e.g. `"INT"` for SIGINT, or
+    /// `"???"` for unknown numbers.
+    fn signal_name(&self, n: i32) -> &'static str;
+
+    /// Install the shell's recording handler for `sig` so that `trap` can
+    /// react to it at the next evaluation boundary. Returns
+    /// `Err(Unsupported)` on systems without signals.
+    fn install_trap_handler(&self, _sig: Signal) -> Result<(), PlatformError> {
+        Err(PlatformError::Unsupported)
+    }
+
+    /// Block the given signals, returning the previous mask so callers can
+    /// restore it with `unblock_signals`. Returns `Err(Unsupported)` on
+    /// systems without signals.
+    fn block_signals(&self, _sigs: &[Signal]) -> Result<SignalMask, PlatformError> {
+        Err(PlatformError::Unsupported)
+    }
+
+    /// Restore a previously returned signal mask. Returns
+    /// `Err(Unsupported)` on systems without signals.
+    fn unblock_signals(&self, _mask: &SignalMask) -> Result<(), PlatformError> {
+        Err(PlatformError::Unsupported)
+    }
+
+    /// Drain the signals received since the last call (used for `trap`).
+    /// Returns an empty vec on systems without signals.
+    fn receive_pending_signals(&self) -> Vec<Signal> {
+        Vec::new()
+    }
+
     // --- Subprocess ---
+
     /// Run `f` in a child process. The child calls `_exit(f())`.
     ///
     /// # Portability
@@ -378,53 +555,41 @@ pub trait Platform: Sync {
     /// Windows backend must implement this differently (e.g. spawn a fresh
     /// `cake -c <script>` process and wire up stdin/stdout/stderr), so callers
     /// should keep the closure free of non-serializable state.
-    fn run_in_child(&self, f: &mut dyn FnMut() -> i32) -> Result<ProcessHandle, ProcessError>;
-
-    // --- FS ---
-    /// The platform's null device path (`/dev/null` on Unix, `NUL` on
-    /// Windows).
-    fn null_device(&self) -> &'static str;
-    /// The platform's preferred path separator (`/` on Unix, `\` on Windows).
-    fn path_separator(&self) -> char;
-    /// Whether `c` is accepted as a path separator. Defaults to accepting
-    /// both `/` and `\` (Windows accepts both).
-    fn is_path_separator(&self, c: char) -> bool {
-        c == '/' || c == '\\'
+    ///
+    /// Returns `Err(Unsupported)` on systems without `fork`.
+    fn fork_and_run(
+        &self,
+        _f: &mut dyn FnMut() -> i32,
+    ) -> Result<ProcessHandle, ProcessError> {
+        Err(ProcessError::Other(
+            "fork_and_run not supported on this platform".into(),
+        ))
     }
-    fn is_executable(&self, path: &str) -> bool;
-    /// Filesystem facts for test operators.
-    fn stat(&self, path: &str) -> FileInfo;
-    /// True if `fd` refers to a terminal (isatty).
-    fn is_terminal_fd(&self, fd: u32) -> bool;
-    /// Get the effective user ID.
-    fn geteuid(&self) -> u32;
-    /// Get the effective group ID.
-    fn getegid(&self) -> u32;
-    /// List the entry names in `path` (glob expansion support).
-    fn read_dir(&self, path: &str) -> Result<Vec<String>, PlatformError>;
-    fn xdg_dir(&self, kind: XdgKind) -> String;
 
-    // --- CWD ---
-    fn current_dir(&self) -> String;
-    fn set_current_dir(&self, path: &str) -> Result<(), PlatformError>;
-    /// Wall-clock seconds since the Unix epoch (for `$SECONDS`/`$RANDOM`).
-    fn time_seconds(&self) -> i64;
-    /// Monotonic nanoseconds since an arbitrary origin (for elapsed-time
-    /// measurements like the prompt's command-execution-time segment).
-    fn time_nanos(&self) -> u64;
-    /// Local time components (hours, minutes, seconds) for the clock segment.
-    fn local_time_hms(&self) -> (u8, u8, u8);
-    /// The parent process id (for `$PPID`).
+    // --- Process info ---
+
+    /// Effective user ID (0 = root on Unix).
+    fn effective_user_id(&self) -> u32 {
+        0
+    }
+
+    /// Effective group ID (0 = root on Unix).
+    fn effective_group_id(&self) -> u32 {
+        0
+    }
+
+    /// Parent process ID (for `$PPID`).
     fn parent_pid(&self) -> i32;
+
     /// The path under which `fd` can be opened (`/dev/fd/N` on Unix).
-    fn fd_path(&self, fd: Fd) -> String;
+    fn fd_to_path(&self, fd: Fd) -> String;
 }
 
 // ---------------------------------------------------------------------------
 // Global accessor
 // ---------------------------------------------------------------------------
 
-static PLATFORM: spin::Once<&'static dyn Platform> = spin::Once::new();
+static PLATFORM: spin::Once<&'static dyn ProcessModel> = spin::Once::new();
 
 /// Initialize the global platform instance. Must be called once before any
 /// call to [`get`], and only from a single-threaded context.
@@ -432,7 +597,7 @@ static PLATFORM: spin::Once<&'static dyn Platform> = spin::Once::new();
 /// # Panics
 ///
 /// Panics if called more than once.
-pub fn init(p: &'static dyn Platform) {
+pub fn init(p: &'static dyn ProcessModel) {
     PLATFORM.call_once(|| p);
 }
 
@@ -441,29 +606,10 @@ pub fn init(p: &'static dyn Platform) {
 /// # Panics
 ///
 /// Panics if [`init`] has not been called yet.
-pub fn get() -> &'static dyn Platform {
+pub fn get() -> &'static dyn ProcessModel {
     *PLATFORM
         .get()
         .expect("cake_platform::init has not been called")
 }
 
-/// Access the global platform instance, if [`init`] has been called.
-/// Used to keep constructors safe before the driver initialises the backend.
-pub fn try_get() -> Option<&'static dyn Platform> {
-    PLATFORM.get().copied()
-}
 
-/// Run `f` with the given signals blocked, restoring the previous mask
-/// afterwards. A convenience built on `block_signals`/`unblock_signals`.
-///
-/// # Panics
-///
-/// Panics if the platform is uninitialized or a mask operation fails.
-pub fn with_signals_blocked<F: FnOnce() -> T, T>(sigs: &[Signal], f: F) -> T {
-    let mask = get().block_signals(sigs).expect("block_signals failed");
-    let result = f();
-    get()
-        .unblock_signals(&mask)
-        .expect("unblock_signals failed");
-    result
-}

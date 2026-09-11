@@ -4,30 +4,30 @@
 //! driver touches terminal state.
 
 use cake_editor::{Candidate, EditEvent, Editor, Key, KeyParser, Render, Services};
-use cake_platform::{Platform, PlatformError, Termios};
+use cake_platform::{PlatformError, ProcessModel, TerminalState};
 
 /// Restore cooked terminal mode when dropped (RAII).
 struct RawModeGuard {
-    platform: &'static dyn Platform,
-    saved: Termios,
+    platform: &'static dyn ProcessModel,
+    saved: TerminalState,
 }
 
 impl RawModeGuard {
     fn enter() -> Result<Self, PlatformError> {
         let p = cake_platform::get();
         // "Get twice": each call returns an independent copy, so `saved`
-        // keeps the cooked state while `raw` is mutated (Termios: !Clone).
-        let saved = p.get_termios(0)?;
-        let mut raw = p.get_termios(0)?;
+        // keeps the cooked state while `raw` is mutated (TerminalState: !Clone).
+        let saved = p.read_terminal_state(0)?;
+        let mut raw = p.read_terminal_state(0)?;
         raw.set_raw();
-        p.set_termios(0, &raw)?;
+        p.write_terminal_state(0, &raw)?;
         Ok(RawModeGuard { platform: p, saved })
     }
 }
 
 impl Drop for RawModeGuard {
     fn drop(&mut self) {
-        let _ = self.platform.set_termios(0, &self.saved);
+        let _ = self.platform.write_terminal_state(0, &self.saved);
     }
 }
 

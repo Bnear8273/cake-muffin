@@ -7,7 +7,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 use cake_env::{EnvStack, EnvVar};
-use cake_proc::ProcStatus;
+use crate::ProcStatus;
 
 use crate::executor::Executor;
 
