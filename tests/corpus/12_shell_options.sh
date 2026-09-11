@@ -38,8 +38,8 @@ set +o pipefail
 false | true
 echo "p2=$?"
 
-mkdir -p /tmp/cake-corpus-glob-$$
-cd /tmp/cake-corpus-glob-$$
+mkdir -p /tmp/muffin-corpus-glob-$$
+cd /tmp/muffin-corpus-glob-$$
 rm -f .hidden plain.txt
 touch .hidden plain.txt
 echo "g1=$(echo *)"
@@ -52,7 +52,7 @@ echo "g4=[$(echo *.zzz)]"
 shopt -u nullglob
 echo "g5=[$(echo *.zzz)]"
 cd /tmp
-rm -rf /tmp/cake-corpus-glob-$$
+rm -rf /tmp/muffin-corpus-glob-$$
 
 trap 'echo bye' EXIT
 echo before-exit

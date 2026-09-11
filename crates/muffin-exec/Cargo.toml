@@ -1,0 +1,16 @@
+[package]
+name = "muffin-exec"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+muffin-blacklist = { path = "../muffin-blacklist" }
+muffin-env = { path = "../muffin-env" }
+muffin-platform = { path = "../muffin-platform" }
+muffin-syntax = { path = "../muffin-syntax" }
+regex = { version = "1", default-features = false, features = ["unicode"] }
+
+[dev-dependencies]
+muffin-platform-mock = { path = "../muffin-platform-mock" }

@@ -1,4 +1,4 @@
-# cake-shell
+# cake-muffin
 
 A bash-compatible shell written in Rust. The domain centers on two ideas:
 shell *semantics* (pure logic) vs. how the OS actually runs things
@@ -33,7 +33,7 @@ the backend uses `fork()` to create the child; callers snapshot shell state
 inside the child (clone-and-build, 5 call sites across `executor.rs` and
 `expand.rs`; the old raw-pointer reborrow is gone since 2026-09-11). It
 remains the most Unix-coupled surface: a backend without `fork` must create
-the child differently (e.g. spawn a fresh `cake -c <script>` process with
+the child differently (e.g. spawn a fresh `cake-muffin -c <script>` process with
 explicitly passed state).
 _Avoid_: run_in_child, fork hook, child runner
 
@@ -61,56 +61,56 @@ _Avoid_: handle, stream id
 
 **C1: Split Platform + ProcessModel (Strong)**
 Platform trait 混合了两个职责：Platform（文件、fd、终端、CWD、时间）和 ProcessModel（spawn、wait、kill、信号、run_in_child）。Mock 适配器已部分展示这种分离——支持 Platform 方法，但对 ProcessModel 方法返回 Unsupported。拆分后创建两个深度模块，ProcessModel 成为未来 Windows 后端的自然接缝。
-- 文件: `crates/cake-platform/src/lib.rs:315-421`
+- 文件: `crates/muffin-platform/src/lib.rs:315-421`
 - **Status (2026-09-11): done.** `ProcessModel: Platform`（超级 trait）；`get()` 返回 `&'static dyn ProcessModel`；Unix/Mock 均拆分为双 impl；15 个方法 + `Termios`→`TerminalState` 已重命名；12 个方法有默认实现。
 
 **C2: Thread &dyn Platform through Executor (Strong)**
-cake-exec 中 92 个调用点通过全局 `cake_platform::get()` 访问平台。MockPlatform 已存在但被孤立——无测试依赖。将 `&dyn Platform` 穿透到 Executor 及其协作者中，将全局接缝转变为真实适配器接缝，为整个 cake-exec 解锁 mock 测试。
-- 文件: `crates/cake-exec/src/executor.rs`, `builtins.rs`, `cond.rs`, `redirect.rs`, `expand.rs`, `glob.rs`, `path.rs`
-- **Status (2026-09-11): done.** cake-exec 内 `get()` 清零（已验证）；`Executor<'a>` + `ExpandCtx` 持有 `&dyn ProcessModel`；Mock 接入 dev-dependencies，已有 15+ 真实 mock 测试（文件测试、`cd`/`pwd`、glob、`[[ ]]`）。
+muffin-exec 中 92 个调用点通过全局 `muffin_platform::get()` 访问平台。MockPlatform 已存在但被孤立——无测试依赖。将 `&dyn Platform` 穿透到 Executor 及其协作者中，将全局接缝转变为真实适配器接缝，为整个 muffin-exec 解锁 mock 测试。
+- 文件: `crates/muffin-exec/src/executor.rs`, `builtins.rs`, `cond.rs`, `redirect.rs`, `expand.rs`, `glob.rs`, `path.rs`
+- **Status (2026-09-11): done.** muffin-exec 内 `get()` 清零（已验证）；`Executor<'a>` + `ExpandCtx` 持有 `&dyn ProcessModel`；Mock 接入 dev-dependencies，已有 15+ 真实 mock 测试（文件测试、`cd`/`pwd`、glob、`[[ ]]`）。
 
 **C3: Unify test operator evaluation (Worth exploring)**
 `[[ ... ]]` (cond.rs) 和 `[ ... ]`/`test` (builtins.rs) 独立实现了相同的文件测试和比较运算符，`parse_num` 被字面复制。提取共享测试求值模块，局部性：添加新运算符只需修改一处。
-- 文件: `crates/cake-exec/src/cond.rs:120-299`, `crates/cake-exec/src/builtins.rs:451-680`
+- 文件: `crates/muffin-exec/src/cond.rs:120-299`, `crates/muffin-exec/src/builtins.rs:451-680`
 - **Status (2026-09-11): done.** 提取 `test_ops` 模块（`parse_num`/`eval_unary_file_test`/`eval_binary_file_test`），两处共用。
 
 **C4: Extract sub-shell Executor construction (Worth exploring → 现在最优先)**
 三个独立位置手动复制 7-8 个字段构造子 shell Executor。提取 `Executor::fork_shell_state()` 集中此逻辑，避免并行结构漂移。
-- 文件: `crates/cake-exec/src/expand.rs:412-439`, `expand.rs:491-498`, `executor.rs:1380-1405`
+- 文件: `crates/muffin-exec/src/expand.rs:412-439`, `expand.rs:491-498`, `executor.rs:1380-1405`
 - **Status (2026-09-11): open, scope grew — 现 5 处。** Phase 3 把 3 处裸指针改成 clone-and-build，手动快照点从 3 涨到 5：`executor.rs`（background `&`、subshell `()`、coproc）+ `expand.rs`（进程替换、命令替换）。漂移风险升高，应提取统一快照构造。
 
 **C5: Introduce RAII fd wrapper (Speculative)**
 无 RAII fd 包装器，手动 close 散布各处。`apply_fds_in_parent` 无 panic 安全性。引入 `GuardedFd` 将 fd 生命周期集中在一处。
-- 文件: `crates/cake-exec/src/redirect.rs:16-24`, `executor.rs:1483-1525`
+- 文件: `crates/muffin-exec/src/redirect.rs:16-24`, `executor.rs:1483-1525`
 - **Status (2026-09-11): open.** 未动；现为唯一剩余候选项。
 
 **C6: Delete dead crates (Worth exploring)**
-`cake-builtin` 为空占位符，`cake-proc` 定义了从未使用的 `Process`/`Job` 类型。删除测试：不集中复杂性，只移除噪音。
-- 文件: `crates/cake-builtin/`, `crates/cake-proc/`
-- **Status (2026-09-11): done, 超出原计划。** `cake-builtin` 整 crate 删除；`cake-proc` 不止删死类型，整个 crate 合并进 `cake-exec::proc_status` 后删除（工作区 15→13 crate）。
+`muffin-builtin` 为空占位符，`muffin-proc` 定义了从未使用的 `Process`/`Job` 类型。删除测试：不集中复杂性，只移除噪音。
+- 文件: `crates/muffin-builtin/`, `crates/muffin-proc/`
+- **Status (2026-09-11): done, 超出原计划。** `muffin-builtin` 整 crate 删除；`muffin-proc` 不止删死类型，整个 crate 合并进 `muffin-exec::proc_status` 后删除（工作区 15→13 crate）。
 
 ### Top Recommendation
-C1 + C2 深度关联，应一起处理。拆分创建 ProcessModel 接缝；穿透 &dyn Platform 将全局单例转变为适配器接缝。两者结合为 cake-exec（最复杂且测试最少的部分）解锁 mock 测试。
+C1 + C2 深度关联，应一起处理。拆分创建 ProcessModel 接缝；穿透 &dyn Platform 将全局单例转变为适配器接缝。两者结合为 muffin-exec（最复杂且测试最少的部分）解锁 mock 测试。
 - **Status (2026-09-11): fulfilled.** C1+C2 按预期兑现，mock 测试已解锁（15+ mock 测试）。新推荐：**C4**——5 处子 shell 快照需统一构造，防止漂移。
 
 ## Unix Coupling Analysis (2026-09-03)
 
 ### Coupling Map
 
-所有 `nix`/`libc` 调用**仅存在于一个文件**：`crates/cake-platform-unix/src/lib.rs`（2026-09-11 复核仍成立；`cake/src/main.rs` 的一处命中是 `platform_unix::` 子串误报）。
-`cake-exec`（shell 逻辑核心）零直接 Unix 导入——现经 `Executor.platform: &dyn ProcessModel` 间接调用（`get()` 已清零）。
+所有 `nix`/`libc` 调用**仅存在于一个文件**：`crates/muffin-platform-unix/src/lib.rs`（2026-09-11 复核仍成立；`muffin/src/main.rs` 的一处命中是 `platform_unix::` 子串误报）。
+`muffin-exec`（shell 逻辑核心）零直接 Unix 导入——现经 `Executor.platform: &dyn ProcessModel` 间接调用（`get()` 已清零）。
 
 | 类别 | 数量 | 位置 |
 |------|------|------|
-| `nix::` 出现 | 70 处 | 全部在 `cake-platform-unix`（`rg -o` 口径；原 46 为 call 口径） |
-| `libc::` 出现 | 58 处 | 全部在 `cake-platform-unix`（`rg -o` 口径；原 45 为 call 口径） |
-| `unsafe` | 35 处 | 全部在 `cake-platform-unix`（`cake-platform` 仅 `forbid` 属性行） |
+| `nix::` 出现 | 70 处 | 全部在 `muffin-platform-unix`（`rg -o` 口径；原 46 为 call 口径） |
+| `libc::` 出现 | 58 处 | 全部在 `muffin-platform-unix`（`rg -o` 口径；原 45 为 call 口径） |
+| `unsafe` | 35 处 | 全部在 `muffin-platform-unix`（`muffin-platform` 仅 `forbid` 属性行） |
 | `fork()` 调用 | 2 处 | `spawn()` 和 `fork_and_run()`（已改名，原 `run_in_child`） |
 
 ### Three True Unix Dependencies
 
 **1. `fork_and_run` 的 fork 语义（调用方 unsafe 已消除，2026-09-11）**
-原 `executor.rs:564-566` 模式（`&mut self`→`*mut Executor` 裸指针，子进程解引用）已全部改为 clone-and-build，cake-exec 现零 `unsafe`。剩余耦合在后端实现内部：`fork()` 凭空变出带继承状态（fds、CWD、信号处置）的子进程。Windows 的 `CreateProcess` 启动全新进程，需显式传递状态——仍是最大的移植障碍，但难度已从"堆快照不可移植"降为"子进程创建方式不同"。
+原 `executor.rs:564-566` 模式（`&mut self`→`*mut Executor` 裸指针，子进程解引用）已全部改为 clone-and-build，muffin-exec 现零 `unsafe`。剩余耦合在后端实现内部：`fork()` 凭空变出带继承状态（fds、CWD、信号处置）的子进程。Windows 的 `CreateProcess` 启动全新进程，需显式传递状态——仍是最大的移植障碍，但难度已从"堆快照不可移植"降为"子进程创建方式不同"。
 - 调用点（均为 clone-and-build）: `executor.rs`（背景任务 `&`、子 shell `()`、coproc）+ `expand.rs`（进程替换 `<()`/`>()`、命令替换 `$()`），共 5 处
 
 **2. 信号数字硬编码（已修复，2026-09-11）**
@@ -118,28 +118,28 @@ C1 + C2 深度关联，应一起处理。拆分创建 ProcessModel 接缝；穿�
 
 **3. 二进制 crate 直接使用 `std`（绕过 Platform）**
 `repl.rs` 中有 3 处 `std::fs::read_dir()` 应该用 `Platform::read_dir()`，1 处 `std::io::IsTerminal` 应该用 `Platform::is_terminal_fd()`。
-- **Status (2026-09-11): partial.** `read_dir` 3 处已改（含补全路径拼接辅助 `join_path`）；`IsTerminal` 仍残留（`cake/src/repl.rs:214`），待修。
+- **Status (2026-09-11): partial.** `read_dir` 3 处已改（含补全路径拼接辅助 `join_path`）；`IsTerminal` 仍残留（`muffin/src/repl.rs:214`），待修。
 
 ### Platform Coupling Table
 
 | 分类 | Crate 数量 | 说明 |
 |------|-----------|------|
-| **已平台无关** | 12 | `cake-syntax`, `cake-env`, `cake-blacklist`, `cake-complete`, `cake-reader`, `cake-editor`, `cake-highlight`, `cake-prompt`, `cake-exec/arith`, `cake-exec/resolve` 等 |
+| **已平台无关** | 12 | `muffin-syntax`, `muffin-env`, `muffin-blacklist`, `muffin-complete`, `muffin-reader`, `muffin-editor`, `muffin-highlight`, `muffin-prompt`, `muffin-exec/arith`, `muffin-exec/resolve` 等 |
 | **已穿透引用** | 7 模块 | `executor`, `builtins`, `cond`, `expand`, `redirect`, `glob`, `path`——经 `Executor.platform` 访问，mock 测试已落地 |
-| **故意 Unix 耦合** | 1 | `cake-platform-unix`——后端实现，应保持 |
-| **mixed** | 1 | `cake` 二进制 crate——作为 driver 用 `get()` 初始化并传入 `Executor::new`（by design）；补全 `read_dir` 已收敛到 Platform，`IsTerminal` 仍直连 `std` |
+| **故意 Unix 耦合** | 1 | `muffin-platform-unix`——后端实现，应保持 |
+| **mixed** | 1 | `muffin` 二进制 crate——作为 driver 用 `get()` 初始化并传入 `Executor::new`（by design）；补全 `read_dir` 已收敛到 Platform，`IsTerminal` 仍直连 `std` |
 
 ### Hardcoded Unix Assumptions in Strings
 
 | 位置 | 假设 | 状态 |
 |------|------|------|
-| `cake-env/env_var.rs:51` | `PATH_DELIMITER: char = ':'` | ✅ 已修复（`cfg(windows)`→`;`） |
-| `cake-exec/glob.rs` pattern 解析 | `.split('/')` | ✅ 已修复（`is_path_separator()` 驱动拆分） |
-| `cake-exec/glob.rs` 根目录 | `"/"` 字面量 | ✅ 已修复（`path_separator()` 构造 `root`） |
+| `muffin-env/env_var.rs:51` | `PATH_DELIMITER: char = ':'` | ✅ 已修复（`cfg(windows)`→`;`） |
+| `muffin-exec/glob.rs` pattern 解析 | `.split('/')` | ✅ 已修复（`is_path_separator()` 驱动拆分） |
+| `muffin-exec/glob.rs` 根目录 | `"/"` 字面量 | ✅ 已修复（`path_separator()` 构造 `root`） |
 
 ### Portability Conclusion
 
-架构设计是正确的——Unix 耦合被有意地隔离在 `cake-platform-unix` 中。真正的移植障碍曾是 `run_in_child` 的 fork 语义；2026-09-11 后调用方已全部改为 clone-and-build，"复制堆内存"的要求消失。剩余障碍收敛为一点：后端必须能**凭空变出带继承 OS 状态（fds、CWD、信号处置）的子进程**——Unix 用 `fork()` 免费获得，Windows 需 `CreateProcess` + 显式状态传递。命令替换、进程替换、背景任务、子 shell、coproc 现在使用同一模式，移植面已统一。
+架构设计是正确的——Unix 耦合被有意地隔离在 `muffin-platform-unix` 中。真正的移植障碍曾是 `run_in_child` 的 fork 语义；2026-09-11 后调用方已全部改为 clone-and-build，"复制堆内存"的要求消失。剩余障碍收敛为一点：后端必须能**凭空变出带继承 OS 状态（fds、CWD、信号处置）的子进程**——Unix 用 `fork()` 免费获得，Windows 需 `CreateProcess` + 显式状态传递。命令替换、进程替换、背景任务、子 shell、coproc 现在使用同一模式，移植面已统一。
 
 ## Unix Decoupling Plan (2026-09-04)
 
@@ -147,7 +147,7 @@ C1 + C2 深度关联，应一起处理。拆分创建 ProcessModel 接缝；穿�
 
 ### Goal
 
-将 cake-shell 从"隐式 Unix 耦合"转变为"显式平台抽象"，解锁 mock 测试并为自定义 OS 后端铺路。
+将 cake-muffin 从"隐式 Unix 耦合"转变为"显式平台抽象"，解锁 mock 测试并为自定义 OS 后端铺路。
 
 ### Design Principles
 
@@ -230,47 +230,47 @@ ProcessModel : Platform
 
 ### Phase 1: 拆分 Platform + ProcessModel
 
-**目标：** 将 Platform trait 拆分为两个 trait，不改变 cake-exec 代码。
+**目标：** 将 Platform trait 拆分为两个 trait，不改变 muffin-exec 代码。
 
-**Step 1.1 — 在 cake-platform 中创建 ProcessModel trait**
+**Step 1.1 — 在 muffin-platform 中创建 ProcessModel trait**
 
-文件: `crates/cake-platform/src/lib.rs`
+文件: `crates/muffin-platform/src/lib.rs`
 
 从 Platform 移出 Process/Signal/Subprocess/ProcessInfo 方法到新的 `ProcessModel` trait。ProcessModel 继承 Platform（超级 trait）。给 12 个方法加默认实现。
 
 **Step 1.2 — 重命名 15 个方法 + 1 个类型**
 
-文件: `crates/cake-platform/src/lib.rs`, `crates/cake-platform-unix/src/lib.rs`, `crates/cake-platform-mock/src/lib.rs`
+文件: `crates/muffin-platform/src/lib.rs`, `crates/muffin-platform-unix/src/lib.rs`, `crates/muffin-platform-mock/src/lib.rs`
 
 按命名表重命名。全局访问器改为返回 `&'static dyn ProcessModel`。
 
 **Step 1.3 — 更新 Unix 后端**
 
-文件: `crates/cake-platform-unix/src/lib.rs`
+文件: `crates/muffin-platform-unix/src/lib.rs`
 
 拆分为 `impl Platform for UnixPlatform` + `impl ProcessModel for UnixPlatform`。
 
 **Step 1.4 — 更新 Mock 后端**
 
-文件: `crates/cake-platform-mock/src/lib.rs`
+文件: `crates/muffin-platform-mock/src/lib.rs`
 
 拆分为 `impl Platform for MockPlatform` + `impl ProcessModel for MockPlatform`。
 
-**Step 1.5 — 更新 cake-exec 导入**
+**Step 1.5 — 更新 muffin-exec 导入**
 
-文件: `crates/cake-exec/src/*.rs`
+文件: `crates/muffin-exec/src/*.rs`
 
-所有 `use cake_platform::Platform` 改为 `use cake_platform::ProcessModel`。
+所有 `use muffin_platform::Platform` 改为 `use muffin_platform::ProcessModel`。
 
 **验证：** `cargo check && cargo test`
 
 ### Phase 2: 穿透 `&dyn ProcessModel` 到 Executor
 
-**目标：** 将 92 个 `cake_platform::get()` 调用替换为通过 Executor 传递的引用。
+**目标：** 将 92 个 `muffin_platform::get()` 调用替换为通过 Executor 传递的引用。
 
 **Step 2.1 — Executor 持有 ProcessModel 引用**
 
-文件: `crates/cake-exec/src/executor.rs`
+文件: `crates/muffin-exec/src/executor.rs`
 
 ```rust
 pub struct Executor<'a> {
@@ -282,7 +282,7 @@ pub fn new(env: EnvStack, platform: &'a dyn ProcessModel) -> Self
 
 **Step 2.2 — 更新 ExpandCtx**
 
-文件: `crates/cake-exec/src/expand.rs`
+文件: `crates/muffin-exec/src/expand.rs`
 
 ```rust
 pub struct ExpandCtx<'a> {
@@ -291,7 +291,7 @@ pub struct ExpandCtx<'a> {
 }
 ```
 
-**Step 2.3 — 替换所有 cake_platform::get()**
+**Step 2.3 — 替换所有 muffin_platform::get()**
 
 文件: `executor.rs`(20), `builtins.rs`(28), `cond.rs`(28), `expand.rs`(5), `redirect.rs`(9), `glob.rs`(1), `path.rs`(1)
 
@@ -299,10 +299,10 @@ pub struct ExpandCtx<'a> {
 
 **Step 2.4 — 更新 binary crate**
 
-文件: `cake/src/main.rs`, `repl.rs`, `readline.rs`, `prompt.rs`
+文件: `muffin/src/main.rs`, `repl.rs`, `readline.rs`, `prompt.rs`
 
 ```rust
-let mut executor = Executor::new(env, cake_platform::get());
+let mut executor = Executor::new(env, muffin_platform::get());
 ```
 
 **验证：** `cargo check && cargo test`
@@ -317,7 +317,7 @@ let mut executor = Executor::new(env, cake_platform::get());
 
 ### Phase 4: 清理
 
-- 删除死代码 crate: `cake-builtin`, `cake-proc`
+- 删除死代码 crate: `muffin-builtin`, `muffin-proc`
 - 统一测试运算符: 提取 cond.rs + builtins.rs 共享模块
 
 ### 依赖顺序
@@ -339,8 +339,8 @@ Phase 1–4 均按依赖顺序完成，验证均为 `cargo check && cargo test` 
 - **Phase 1.5 范围扩大**：除导入外，`out()` 等 builtin 输出函数也收 `platform` 参数（18 调用点）；`try_get()`/`with_signals_blocked` 因零调用被删除。
 - **计划外：`Signal` +12 变体**——原计划称硬编码数字"不会导致正确性问题"，实际 macOS 下 BUS/STOP 会装错 handler，已修复。
 - **计划外：Mock 升级**——`set_file_info`/`set_dir_entries`/write 录制 + 首批 15 个真实 mock 测试（文件测试、`cd`/`pwd`、glob、`[[ ]]`、信号往返）。
-- **Phase 4 超出**：`cake-proc` 整 crate 合并进 `cake-exec::proc_status` 后删除（工作区 15→13 crate）；另删除 `ExpandCtx.parent_pid` 快照字段（改 live 读取）。
-- **遗留 TODO**：`cake/src/repl.rs:214` 的 `std::io::IsTerminal` 未收敛到 `Platform::is_terminal_fd()`。
+- **Phase 4 超出**：`muffin-proc` 整 crate 合并进 `muffin-exec::proc_status` 后删除（工作区 15→13 crate）；另删除 `ExpandCtx.parent_pid` 快照字段（改 live 读取）。
+- **遗留 TODO**：`muffin/src/repl.rs:214` 的 `std::io::IsTerminal` 未收敛到 `Platform::is_terminal_fd()`。
 
 ## Sessions after 2026-09-04 (2026-09-11 合记)
 
@@ -349,6 +349,6 @@ Phase 1–4 均按依赖顺序完成，验证均为 `cargo check && cargo test` 
 1. **Phase 2 收尾**：`out(platform, s)`（`echo`/`printf`/`print_alias` 新增参数，18 调用点）；删除死 API `try_get()`/`with_signals_blocked()`。
 2. **可移植性缺口**：glob `/` 硬编码→`is_path_separator()`/`path_separator()` 驱动；`PATH_DELIMITER`→`cfg(windows)`；repl 补全 3 处 `read_dir`→`platform.read_dir()`（+`join_path` 辅助）；`Signal` +12 变体，`parse_trigger` 零硬编码。
 3. **Mock 兑现**：`set_file_info`/`set_dir_entries`/write 录制（`take_writes`/`written_to`）；15 个真实 mock 测试（`test` 文件/权限/二元运算符、`cd`/`pwd` 输出断言、glob、`[[ ]]`、`$?` 透传、信号往返）。
-4. **P2 清理**：`cake-proc`→`cake-exec::proc_status` 并删 crate；`ExpandCtx.parent_pid` 快照字段删除（`$PPID` 改 live 读取）；mock 首个单测（信号映射表）。
+4. **P2 清理**：`muffin-proc`→`muffin-exec::proc_status` 并删 crate；`ExpandCtx.parent_pid` 快照字段删除（`$PPID` 改 live 读取）；mock 首个单测（信号映射表）。
 
-最终状态：`cargo check` 通过 · **238 测试全过** · `clippy --all-targets` 零警告 · cake-exec 零 `unsafe`、零 `cake_platform::get()` · 工作区 15→13 crate。
+最终状态：`cargo check` 通过 · **238 测试全过** · `clippy --all-targets` 零警告 · muffin-exec 零 `unsafe`、零 `muffin_platform::get()` · 工作区 15→13 crate。

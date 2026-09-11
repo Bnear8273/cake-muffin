@@ -1,8 +1,8 @@
-# cake
+# muffin
 
 A bash-compatible shell with a modern interactive layer, written in Rust.
 
-`cake` aims to be a drop-in-ish replacement for `bash` for everyday interactive
+`muffin` aims to be a drop-in-ish replacement for `bash` for everyday interactive
 use: the full control-flow / pipeline / expansion semantics of bash, wrapped in
 a modern line editor with syntax highlighting, tab completion, context-aware
 autosuggestion and a customizable prompt.
@@ -47,15 +47,15 @@ autosuggestion and a customizable prompt.
   - context-aware autosuggestion from history
   - `~`-relative path prompt (override with `PS1`)
   - history + "command not found" blacklist persisted under the XDG data dir
-  - a startup rc file at `$XDG_DATA_HOME/cake/rc` (aliases, `PS1`, ...) is
+  - a startup rc file at `$XDG_DATA_HOME/muffin/rc` (aliases, `PS1`, ...) is
     evaluated at session start
 
 ## Usage
 
 ```console
-$ cake                      # interactive shell
-$ cake -c 'echo hello'      # run one command and exit
-$ cake --help
+$ muffin                      # interactive shell
+$ muffin -c 'echo hello'      # run one command and exit
+$ muffin --help
 ```
 
 Aliases work in interactive mode (like bash, aliases don't expand in `-c`):
@@ -79,19 +79,19 @@ A Cargo workspace of 13 crates with a strict split between pure `#![no_std]`
 shell logic and the OS-dependent layer:
 
 ```
-cake                  the binary: arg parsing, REPL loop, platform wiring
-crates/cake-syntax    lexer + recursive-descent parser + AST (no_std)
-crates/cake-exec      evaluator: control flow, expansion, pipelines, builtins
-crates/cake-env       copy-on-write EnvVar / EnvStack scoping
-crates/cake-proc      job/process data model
-crates/cake-platform  backend-neutral Platform trait (no_std)
-crates/cake-platform-unix   real backend (nix/libc)
-crates/cake-platform-mock   test backend
-crates/cake-complete  tab-completion logic (no_std)
-crates/cake-highlight syntax-highlighting logic (no_std)
-crates/cake-reader    autosuggestion logic (no_std)
-crates/cake-blacklist persistent "command not found" set (no_std)
-crates/cake-builtin   reserved for a future builtin split (no_std)
+muffin                  the binary: arg parsing, REPL loop, platform wiring
+crates/muffin-syntax    lexer + recursive-descent parser + AST (no_std)
+crates/muffin-exec      evaluator: control flow, expansion, pipelines, builtins
+crates/muffin-env       copy-on-write EnvVar / EnvStack scoping
+crates/muffin-proc      job/process data model
+crates/muffin-platform  backend-neutral Platform trait (no_std)
+crates/muffin-platform-unix   real backend (nix/libc)
+crates/muffin-platform-mock   test backend
+crates/muffin-complete  tab-completion logic (no_std)
+crates/muffin-highlight syntax-highlighting logic (no_std)
+crates/muffin-reader    autosuggestion logic (no_std)
+crates/muffin-blacklist persistent "command not found" set (no_std)
+crates/muffin-builtin   reserved for a future builtin split (no_std)
 ```
 
 Every pure-logic crate is `#![no_std]` (only `alloc`); only the binary and the
@@ -108,12 +108,12 @@ $ cargo test              # unit tests + differential corpus (needs bash)
 $ cargo clippy -- -D warnings
 ```
 
-`cargo test` runs two differential suites that compare `cake` against real
+`cargo test` runs two differential suites that compare `muffin` against real
 `bash --posix` on stdout bytes and exit codes:
 
-- `cake/tests/shell_compat.rs` — curated snippets.
-- `cake/tests/corpus.rs` — drives every file in `tests/corpus/`; files are
-  marked `# cake:xfail` (expected to differ) or `# cake:skip`.
+- `muffin/tests/shell_compat.rs` — curated snippets.
+- `muffin/tests/corpus.rs` — drives every file in `tests/corpus/`; files are
+  marked `# muffin:xfail` (expected to differ) or `# muffin:skip`.
 
 ## Status
 

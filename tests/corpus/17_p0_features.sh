@@ -49,9 +49,9 @@ v="pattern123"
 [[ "item123" =~ $v ]] && echo re-var || echo re-novar
 
 # --- pushd / popd / dirs ---
-rm -rf /tmp/cake_corpus_p0
-mkdir -p /tmp/cake_corpus_p0/a /tmp/cake_corpus_p0/b
-cd /tmp/cake_corpus_p0
+rm -rf /tmp/muffin_corpus_p0
+mkdir -p /tmp/muffin_corpus_p0/a /tmp/muffin_corpus_p0/b
+cd /tmp/muffin_corpus_p0
 pushd a >/dev/null
 pwd
 popd >/dev/null
@@ -65,7 +65,7 @@ pwd
 popd >/dev/null
 pwd
 cd /
-rm -rf /tmp/cake_corpus_p0
+rm -rf /tmp/muffin_corpus_p0
 
 # --- getopts ---
 while getopts "ab:" opt -a -b val1; do
@@ -77,7 +77,7 @@ while getopts "ab:" opt -a -b val1; do
 done
 
 # --- globstar ** ---
-cd /tmp/cake-corpus-p0-$$
+cd /tmp/muffin-corpus-p0-$$
 mkdir -p glob/sub/deep
 touch glob/top.txt glob/sub/mid.txt glob/sub/deep/bot.txt
 shopt -s globstar
@@ -91,4 +91,4 @@ echo "alpha=$(echo [[:alpha:]]*.txt | sort | tr ' ' ' ')"
 echo "digit=$(echo [[:digit:]]*.txt | sort | tr ' ' ' ')"
 
 cd /
-rm -rf /tmp/cake-corpus-p0-$$
+rm -rf /tmp/muffin-corpus-p0-$$

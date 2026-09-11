@@ -1,0 +1,23 @@
+[package]
+name = "muffin"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "muffin"
+path = "src/main.rs"
+
+[dependencies]
+muffin-blacklist = { path = "../crates/muffin-blacklist" }
+muffin-complete = { path = "../crates/muffin-complete" }
+muffin-editor = { path = "../crates/muffin-editor" }
+muffin-env = { path = "../crates/muffin-env" }
+muffin-exec = { path = "../crates/muffin-exec" }
+muffin-highlight = { path = "../crates/muffin-highlight" }
+muffin-platform = { path = "../crates/muffin-platform" }
+muffin-platform-unix = { path = "../crates/muffin-platform-unix" }
+muffin-prompt = { path = "../crates/muffin-prompt" }
+muffin-reader = { path = "../crates/muffin-reader" }
+muffin-syntax = { path = "../crates/muffin-syntax" }

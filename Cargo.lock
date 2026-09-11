@@ -9,102 +9,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b588b76d00fde79687d7646a9b5bdf3cc0f655e0bbd080335a95d7e96f3587da"
 
 [[package]]
-name = "cake"
-version = "0.1.0"
-dependencies = [
- "cake-blacklist",
- "cake-complete",
- "cake-editor",
- "cake-env",
- "cake-exec",
- "cake-highlight",
- "cake-platform",
- "cake-platform-unix",
- "cake-prompt",
- "cake-reader",
- "cake-syntax",
-]
-
-[[package]]
-name = "cake-blacklist"
-version = "0.1.0"
-
-[[package]]
-name = "cake-complete"
-version = "0.1.0"
-dependencies = [
- "cake-syntax",
-]
-
-[[package]]
-name = "cake-editor"
-version = "0.1.0"
-dependencies = [
- "unicode-width",
-]
-
-[[package]]
-name = "cake-env"
-version = "0.1.0"
-
-[[package]]
-name = "cake-exec"
-version = "0.1.0"
-dependencies = [
- "cake-blacklist",
- "cake-env",
- "cake-platform",
- "cake-platform-mock",
- "cake-syntax",
- "regex",
-]
-
-[[package]]
-name = "cake-highlight"
-version = "0.1.0"
-dependencies = [
- "cake-syntax",
-]
-
-[[package]]
-name = "cake-platform"
-version = "0.1.0"
-dependencies = [
- "spin",
-]
-
-[[package]]
-name = "cake-platform-mock"
-version = "0.1.0"
-dependencies = [
- "cake-platform",
-]
-
-[[package]]
-name = "cake-platform-unix"
-version = "0.1.0"
-dependencies = [
- "cake-platform",
- "libc",
- "nix",
-]
-
-[[package]]
-name = "cake-prompt"
-version = "0.1.0"
-dependencies = [
- "unicode-width",
-]
-
-[[package]]
-name = "cake-reader"
-version = "0.1.0"
-
-[[package]]
-name = "cake-syntax"
-version = "0.1.0"
-
-[[package]]
 name = "cfg-if"
 version = "1.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -121,6 +25,102 @@ name = "libc"
 version = "0.2.189"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3eaf3ede3fee6db1a4c2ee091bf8a8b4dccdc6d17f656fb07896ee72867612f2"
+
+[[package]]
+name = "muffin"
+version = "0.1.0"
+dependencies = [
+ "muffin-blacklist",
+ "muffin-complete",
+ "muffin-editor",
+ "muffin-env",
+ "muffin-exec",
+ "muffin-highlight",
+ "muffin-platform",
+ "muffin-platform-unix",
+ "muffin-prompt",
+ "muffin-reader",
+ "muffin-syntax",
+]
+
+[[package]]
+name = "muffin-blacklist"
+version = "0.1.0"
+
+[[package]]
+name = "muffin-complete"
+version = "0.1.0"
+dependencies = [
+ "muffin-syntax",
+]
+
+[[package]]
+name = "muffin-editor"
+version = "0.1.0"
+dependencies = [
+ "unicode-width",
+]
+
+[[package]]
+name = "muffin-env"
+version = "0.1.0"
+
+[[package]]
+name = "muffin-exec"
+version = "0.1.0"
+dependencies = [
+ "muffin-blacklist",
+ "muffin-env",
+ "muffin-platform",
+ "muffin-platform-mock",
+ "muffin-syntax",
+ "regex",
+]
+
+[[package]]
+name = "muffin-highlight"
+version = "0.1.0"
+dependencies = [
+ "muffin-syntax",
+]
+
+[[package]]
+name = "muffin-platform"
+version = "0.1.0"
+dependencies = [
+ "spin",
+]
+
+[[package]]
+name = "muffin-platform-mock"
+version = "0.1.0"
+dependencies = [
+ "muffin-platform",
+]
+
+[[package]]
+name = "muffin-platform-unix"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "muffin-platform",
+ "nix",
+]
+
+[[package]]
+name = "muffin-prompt"
+version = "0.1.0"
+dependencies = [
+ "unicode-width",
+]
+
+[[package]]
+name = "muffin-reader"
+version = "0.1.0"
+
+[[package]]
+name = "muffin-syntax"
+version = "0.1.0"
 
 [[package]]
 name = "nix"

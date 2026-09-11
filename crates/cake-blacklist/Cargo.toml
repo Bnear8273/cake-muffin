@@ -1,9 +1,0 @@
-[package]
-name = "cake-blacklist"
-version.workspace = true
-edition.workspace = true
-license.workspace = true
-rust-version.workspace = true
-description = "Persistent command-not-found blacklist set (no_std)"
-
-[dependencies]

@@ -1,5 +1,5 @@
 cd /tmp
-touch cake_glob_aaa cake_glob_bbb
-echo cake_glob_*
-rm -f cake_glob_aaa cake_glob_bbb
+touch muffin_glob_aaa muffin_glob_bbb
+echo muffin_glob_*
+rm -f muffin_glob_aaa muffin_glob_bbb
 echo ??.txt

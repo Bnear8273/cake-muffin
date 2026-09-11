@@ -1,9 +1,0 @@
-[package]
-name = "cake-highlight"
-version.workspace = true
-edition.workspace = true
-license.workspace = true
-rust-version.workspace = true
-
-[dependencies]
-cake-syntax = { path = "../cake-syntax" }

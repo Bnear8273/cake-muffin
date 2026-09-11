@@ -1,0 +1,13 @@
+[package]
+name = "muffin-platform"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Backend-neutral platform abstraction for cake-muffin (no_std)"
+
+[features]
+default = []
+
+[dependencies]
+spin = { version = "0.9", default-features = false, features = ["once"] }

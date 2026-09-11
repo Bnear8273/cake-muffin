@@ -4,8 +4,8 @@
 # are exempt and work directly.
 
 shopt -s extglob
-mkdir -p /tmp/cake-corpus-eg-$$
-cd /tmp/cake-corpus-eg-$$
+mkdir -p /tmp/muffin-corpus-eg-$$
+cd /tmp/muffin-corpus-eg-$$
 touch foo.txt bar.txt baz.log backup.txt
 
 eval 'echo @(foo|bar).txt'
@@ -25,6 +25,6 @@ eval 'case foobar in @(foo|bar)*) echo case-yes;; esac'
 eval 'case bar in !(a|b)) echo case-no;; *) echo case-neg;; esac'
 
 cd /tmp
-rm -rf /tmp/cake-corpus-eg-$$
+rm -rf /tmp/muffin-corpus-eg-$$
 
 echo "x=$(< /etc/hostname)" 2>/dev/null || echo no-hostname

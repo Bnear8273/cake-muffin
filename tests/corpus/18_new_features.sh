@@ -2,9 +2,9 @@
 # (-nt -ot -ef -O -G -N -S -b -c -p -u -g -k -h), and arithmetic
 # postfix ++/--. Filesystem work happens in a per-run temp dir.
 
-rm -rf /tmp/cake-corpus-new-$$
-mkdir -p /tmp/cake-corpus-new-$$
-cd /tmp/cake-corpus-new-$$
+rm -rf /tmp/muffin-corpus-new-$$
+mkdir -p /tmp/muffin-corpus-new-$$
+cd /tmp/muffin-corpus-new-$$
 
 # --- C-style for loop ---
 sum=0
@@ -83,4 +83,4 @@ if [ -p pipe.fifo ]; then echo p-yes; else echo p-no; fi
 
 # cleanup
 cd /
-rm -rf /tmp/cake-corpus-new-$$
+rm -rf /tmp/muffin-corpus-new-$$

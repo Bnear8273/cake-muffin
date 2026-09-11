@@ -1,18 +1,18 @@
 [workspace]
 members = [
-    "cake",
-    "crates/cake-blacklist",
-    "crates/cake-complete",
-    "crates/cake-editor",
-    "crates/cake-env",
-    "crates/cake-exec",
-    "crates/cake-highlight",
-    "crates/cake-platform",
-    "crates/cake-platform-mock",
-    "crates/cake-platform-unix",
-    "crates/cake-prompt",
-    "crates/cake-reader",
-    "crates/cake-syntax",
+    "muffin",
+    "crates/muffin-blacklist",
+    "crates/muffin-complete",
+    "crates/muffin-editor",
+    "crates/muffin-env",
+    "crates/muffin-exec",
+    "crates/muffin-highlight",
+    "crates/muffin-platform",
+    "crates/muffin-platform-mock",
+    "crates/muffin-platform-unix",
+    "crates/muffin-prompt",
+    "crates/muffin-reader",
+    "crates/muffin-syntax",
 ]
 resolver = "2"
 
@@ -25,8 +25,8 @@ rust-version = "1.96.0"
 [workspace.dependencies]
 libc = "0.2"
 nix = { version = "0.31", features = ["process", "signal", "fs", "term", "poll", "resource"] }
-cake-platform = { path = "crates/cake-platform" }
-cake-platform-unix = { path = "crates/cake-platform-unix" }
-cake-platform-mock = { path = "crates/cake-platform-mock" }
-cake-editor = { path = "crates/cake-editor" }
-cake-prompt = { path = "crates/cake-prompt" }
+muffin-platform = { path = "crates/muffin-platform" }
+muffin-platform-unix = { path = "crates/muffin-platform-unix" }
+muffin-platform-mock = { path = "crates/muffin-platform-mock" }
+muffin-editor = { path = "crates/muffin-editor" }
+muffin-prompt = { path = "crates/muffin-prompt" }
